@@ -7,9 +7,12 @@ Privacy-first Android app for longitudinal skin health biomarker tracking, calib
 - Native Kotlin and Jetpack Compose Android project.
 - Local-only Room database for numerical biomarker records and product inventory.
 - Private app vault path for raw scan image slots.
+- Camera capture now writes scan JPEGs into that private vault before analysis.
 - Markdown-compatible metadata export under private app storage.
-- CameraX capture screen with ghost overlay, alignment gate, and light-meter gate.
+- CameraX capture screen with standardized capture guidance, ML Kit face tracking, alignment gate, and light-meter gate.
 - Clinical report dashboard with biomarker bars and melanin trend chart.
+- Baseline-to-latest progress metrics for lesion count, erythema, and pigmentation.
+- IGA-style acne severity proxy derived from lesion count for trend tracking, not diagnosis.
 - Inventory logger for product-to-result correlation.
 - Agentic regimen decision logic for longitudinal deltas and ingredient pivots.
 - Interfaces for MediaPipe face landmarking, TFLite biomarker inference, and Amazon India PA-API.
@@ -20,7 +23,7 @@ Raw biometric images are intended to remain in Android internal app storage. The
 
 ## Current model status
 
-The app includes model contracts and a deterministic fallback estimator so the screens and data flow can be exercised before the real TFLite and MediaPipe assets are added. The fallback is not a clinical model.
+The app includes model contracts plus an image-derived heuristic so the screens and private JPEG data flow can be exercised before the real TFLite and MediaPipe assets are added. Captured JPEG bytes flow through `BiomarkerAnalyzer.analyzeCapturedFrame`, and successful decodes record `ImageDerivedHeuristic` in the private markdown export. If a frame cannot be decoded, the analyzer records `DeterministicFallback`. Neither path is a clinical model.
 
 Expected production model path:
 
@@ -28,6 +31,19 @@ Expected production model path:
 2. Add TFLite models for erythema, melanin distribution, texture density, and acne lesion classification.
 3. Replace `BiomarkerAnalyzer.estimateFromCaptureQualityFallback` with image-frame inference.
 4. Validate against Fitzpatrick IV-VI labeled datasets before presenting any biomarker as clinically meaningful.
+
+Expected on-device model filenames are documented in `app/src/main/assets/models/README.md`.
+
+## Evidence-aligned MVP
+
+The product should prioritize validated measurement and longitudinal tracking features before adding broader coaching:
+
+1. Guided standardized capture with consistent distance, frontal baseline, neutral expression, even lighting, and plain background.
+2. Acne lesion detection/counting with inflammatory and non-inflammatory separation.
+3. Acne severity trend scoring aligned to IGA/GEA-style outputs.
+4. Erythema/redness quantification from controlled color analysis or model inference.
+5. Pigmentation and spot/evenness metrics with tone-aware validation for Fitzpatrick IV-VI.
+6. Time-series deltas against baseline, shown as progress metrics rather than diagnostic claims.
 
 ## Build
 
@@ -37,7 +53,7 @@ This repository is scaffolded as a standard Android Gradle project. On a machine
 ./gradlew :app:assembleDebug
 ```
 
-This workspace did not contain Gradle or a populated Android SDK cache when the project was created, so local compilation was not available in this session.
+Debug assembly now passes in this workspace.
 
 ## Product direction
 

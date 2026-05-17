@@ -16,7 +16,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 data class MainUiState(
     val scans: List<ScanEntity> = emptyList(),
@@ -28,7 +31,24 @@ data class ClinicalReport(
     val scan: ScanEntity,
     val recommendation: String,
     val riskNote: String,
+    val acneSeverityGrade: AcneSeverityGrade,
+    val progress: LongitudinalProgress?,
 )
+
+data class LongitudinalProgress(
+    val daysSinceBaseline: Long,
+    val lesionCountDeltaPercent: Float,
+    val erythemaDelta: Float,
+    val pigmentationDelta: Float,
+)
+
+enum class AcneSeverityGrade(val label: String) {
+    Clear("Clear"),
+    AlmostClear("Almost clear"),
+    Mild("Mild"),
+    Moderate("Moderate"),
+    Severe("Severe"),
+}
 
 class MainViewModel(
     private val scanRepository: ScanRepository,
@@ -49,23 +69,53 @@ class MainViewModel(
                         scan = it,
                         recommendation = regimenEngine.evaluate(scans = scans, products = products),
                         riskNote = "Grooming and health utility. Not a diagnosis or replacement for dermatologist care.",
+                        acneSeverityGrade = it.toAcneSeverityGrade(),
+                        progress = scans.toLongitudinalProgress(),
                     )
                 },
             )
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MainUiState())
 
-    fun recordDemoScan(lux: Float, alignmentState: AlignmentState) {
+    fun createPrivateScanImageFile(): File = vaultRepository.createPrivateImageFile()
+
+    fun recordCapturedScan(
+        lux: Float,
+        alignmentState: AlignmentState,
+        imageFile: File,
+        onComplete: () -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
         viewModelScope.launch {
-            val imageUri = vaultRepository.createPrivateImageSlot()
-            val biomarkers = analyzer.estimateFromCaptureQualityFallback(lux = lux, alignmentState = alignmentState)
-            val scanId = scanRepository.insertScan(
-                imageUri = imageUri,
-                lux = lux,
-                biomarkers = biomarkers,
-                alignmentScore = alignmentState.score,
-            )
-            vaultRepository.exportMarkdownMetadata(scanId = scanId, biomarkers = biomarkers, lux = lux)
+            runCatching {
+                val analysis = withContext(Dispatchers.IO) {
+                    analyzer.analyzeCapturedFrame(
+                        frame = imageFile.readBytes(),
+                        lux = lux,
+                        alignmentState = alignmentState,
+                    )
+                }
+                val imageUri = vaultRepository.privateImageUri(imageFile)
+                val scanId = scanRepository.insertScan(
+                    imageUri = imageUri,
+                    lux = lux,
+                    biomarkers = analysis.result,
+                    alignmentScore = alignmentState.score,
+                )
+                withContext(Dispatchers.IO) {
+                    vaultRepository.exportMarkdownMetadata(
+                        scanId = scanId,
+                        biomarkers = analysis.result,
+                        lux = lux,
+                        analysisSource = analysis.source,
+                    )
+                }
+            }.onSuccess {
+                onComplete()
+            }.onFailure { throwable ->
+                imageFile.delete()
+                onError(throwable)
+            }
         }
     }
 
@@ -89,4 +139,28 @@ class MainViewModel(
                 }
             }
     }
+}
+
+private fun ScanEntity.toAcneSeverityGrade(): AcneSeverityGrade = when {
+    acneLesionCount == 0 -> AcneSeverityGrade.Clear
+    acneLesionCount <= 2 -> AcneSeverityGrade.AlmostClear
+    acneLesionCount <= 6 -> AcneSeverityGrade.Mild
+    acneLesionCount <= 12 -> AcneSeverityGrade.Moderate
+    else -> AcneSeverityGrade.Severe
+}
+
+private fun List<ScanEntity>.toLongitudinalProgress(): LongitudinalProgress? {
+    if (size < 2) return null
+    val latest = first()
+    val baseline = last()
+    val baselineLesions = baseline.acneLesionCount.coerceAtLeast(1)
+    val days = java.util.concurrent.TimeUnit.MILLISECONDS.toDays(
+        latest.capturedAtEpochMillis - baseline.capturedAtEpochMillis,
+    )
+    return LongitudinalProgress(
+        daysSinceBaseline = days,
+        lesionCountDeltaPercent = ((latest.acneLesionCount - baseline.acneLesionCount).toFloat() / baselineLesions) * 100f,
+        erythemaDelta = latest.erythemaIndex - baseline.erythemaIndex,
+        pigmentationDelta = latest.melaninDistribution - baseline.melaninDistribution,
+    )
 }

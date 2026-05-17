@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.dermatrack.ai.agent.RegimenEngine
 import com.dermatrack.ai.analysis.BiomarkerAnalyzer
+import com.dermatrack.ai.analysis.MediaPipeFaceLandmarker
 import com.dermatrack.ai.data.local.DermaTrackDatabase
 
 class AppContainer(context: Context) {
@@ -16,5 +17,6 @@ class AppContainer(context: Context) {
     val scanRepository = ScanRepository(database.scanDao())
     val vaultRepository = VaultRepository(context)
     val biomarkerAnalyzer = BiomarkerAnalyzer()
+    val faceLandmarker = MediaPipeFaceLandmarker(context)
     val regimenEngine = RegimenEngine()
 }

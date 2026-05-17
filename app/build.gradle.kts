@@ -42,6 +42,10 @@ android {
         compose = true
         buildConfig = true
     }
+
+    androidResources {
+        noCompress += listOf("tflite", "task")
+    }
 }
 
 dependencies {
@@ -70,4 +74,5 @@ dependencies {
     implementation(libs.tensorflow.lite)
     implementation(libs.tensorflow.lite.support)
     implementation(libs.mediapipe.tasks.vision)
+    implementation(libs.mlkit.face.detection)
 }
