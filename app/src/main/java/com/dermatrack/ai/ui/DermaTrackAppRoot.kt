@@ -105,7 +105,7 @@ import kotlin.math.max
 
 private enum class AppTab { Report, Capture, Inventory }
 
-private enum class CaptureWorkflowStage {
+enum class CaptureWorkflowStage {
     Setup,
     MeshLock,
     FrontTopDown,
@@ -367,7 +367,7 @@ private fun TrendPanel(scans: List<ScanEntity>) {
                     val points = ordered.mapIndexed { index, scan ->
                         Offset(
                             x = index * step,
-                            y = size.height - ((scan.melaninDistribution / 100f).coerceIn(0f, 1f) * size.height),
+                            y = size.height - ((scan.melaninDistribution / 100f).coerceIn(0.1f, 0.9f) * size.height),
                         )
                     }
                     points.zipWithNext().forEach { (a, b) ->
@@ -502,7 +502,7 @@ private fun CaptureScreen(
     DisposableEffect(imageAnalysis, analysisExecutor) {
         imageAnalysis.setAnalyzer(
             analysisExecutor,
-            FaceDetectionFrameAnalyzer { faceTracking = it },
+            FaceDetectionFrameAnalyzer(stage = { workflowStage }) { faceTracking = it },
         )
         onDispose {
             imageAnalysis.clearAnalyzer()
@@ -858,6 +858,7 @@ private fun FaceMeshOverlay(
             return@Canvas
         }
 
+        // Expanded clinical reticle and mesh logic
         val topLeft = previewTransform.map(bounds.left, bounds.top)
         val bottomRight = previewTransform.map(bounds.right, bounds.bottom)
         val left = topLeft.x
@@ -866,6 +867,14 @@ private fun FaceMeshOverlay(
         val bottom = bottomRight.y
         val width = (right - left).coerceAtLeast(1f)
         val height = (bottom - top).coerceAtLeast(1f)
+
+        // Draw Clinical Reticle (Crosshairs)
+        val reticleColor = if (faceTracking.isStraightEnough) Color(0xFF73D6B5) else Color(0xFFE2B05B).copy(alpha = 0.6f)
+        val centerX = left + (width / 2f)
+        val centerY = top + (height / 2f)
+        drawLine(reticleColor, Offset(centerX - 40f, centerY), Offset(centerX + 40f, centerY), strokeWidth = 2f)
+        drawLine(reticleColor, Offset(centerX, centerY - 40f), Offset(centerX, centerY + 40f), strokeWidth = 2f)
+        drawCircle(reticleColor, radius = 50f, center = Offset(centerX, centerY), style = Stroke(width = 1.5f))
 
         val outline = faceTracking.faceOutline.map { previewTransform.map(it.x, it.y) }
         if (outline.size >= 4) {
@@ -1026,8 +1035,8 @@ private data class PreviewCropTransform(
     private val drawnHeight = sourceHeight * scale
     private val xOffset = (canvasWidth - drawnWidth) / 2f
     private val yOffset = (canvasHeight - drawnHeight) / 2f
-    private val frontCameraXCalibration = canvasWidth * -0.11f
-    private val frontCameraYCalibration = canvasHeight * -0.11f
+    private val frontCameraXCalibration = canvasWidth * -0.05f
+    private val frontCameraYCalibration = canvasHeight * -0.15f
 
     fun map(normalizedX: Float, normalizedY: Float): Offset {
         return Offset(

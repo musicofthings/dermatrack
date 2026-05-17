@@ -11,9 +11,11 @@ import com.google.mlkit.vision.face.FaceContour
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.dermatrack.ai.ui.CaptureWorkflowStage
 import java.util.concurrent.atomic.AtomicBoolean
 
 class FaceDetectionFrameAnalyzer(
+    private val stage: () -> CaptureWorkflowStage = { CaptureWorkflowStage.Setup },
     private val onFaceTracking: (FaceTrackingState) -> Unit,
 ) : ImageAnalysis.Analyzer {
     private val detector: FaceDetector = FaceDetection.getClient(
@@ -48,7 +50,7 @@ class FaceDetectionFrameAnalyzer(
         val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
         detector.process(inputImage)
             .addOnSuccessListener { faces ->
-                onFaceTracking(faces.toFaceTrackingState(inputImage.width, inputImage.height))
+                onFaceTracking(faces.toFaceTrackingState(inputImage.width, inputImage.height, stage()))
             }
             .addOnFailureListener {
                 onFaceTracking(FaceTrackingState(guidance = listOf("Face detector warming up. Hold steady.")))
@@ -60,7 +62,7 @@ class FaceDetectionFrameAnalyzer(
     }
 }
 
-private fun List<Face>.toFaceTrackingState(imageWidth: Int, imageHeight: Int): FaceTrackingState {
+private fun List<Face>.toFaceTrackingState(imageWidth: Int, imageHeight: Int, stage: CaptureWorkflowStage): FaceTrackingState {
     val face = maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
         ?: return FaceTrackingState(guidance = listOf("No face detected. Move into the frame."))
 
@@ -98,20 +100,35 @@ private fun List<Face>.toFaceTrackingState(imageWidth: Int, imageHeight: Int): F
         rollDegrees = face.headEulerAngleZ,
         leftEyeOpenProbability = face.leftEyeOpenProbability,
         rightEyeOpenProbability = face.rightEyeOpenProbability,
-        guidance = face.guidance(meshPoints),
+        guidance = face.guidance(meshPoints, stage),
     )
 }
 
-private fun Face.guidance(meshPoints: List<NormalizedPoint>): List<String> {
+private fun Face.guidance(meshPoints: List<NormalizedPoint>, stage: CaptureWorkflowStage): List<String> {
     val guidance = mutableListOf<String>()
+    val isFrontalStage = stage == CaptureWorkflowStage.MeshLock || 
+                         stage == CaptureWorkflowStage.FrontTopDown || 
+                         stage == CaptureWorkflowStage.FrontLeftRight
+
     if (kotlin.math.abs(headEulerAngleZ) > 8f) guidance += "Sit straight and keep your head level."
-    if (kotlin.math.abs(headEulerAngleY) > 10f) guidance += "Look straight at the camera."
+    
+    if (isFrontalStage) {
+        if (kotlin.math.abs(headEulerAngleY) > 10f) guidance += "Look straight at the camera."
+    } else {
+        // Profile guidance
+        val isLeft = stage == CaptureWorkflowStage.TurnLeftPrompt || stage == CaptureWorkflowStage.LeftTopDown
+        val isRight = stage == CaptureWorkflowStage.TurnRightPrompt || stage == CaptureWorkflowStage.RightTopDown
+        if (isLeft && headEulerAngleY > -18f) guidance += "Turn more to the left."
+        if (isRight && headEulerAngleY < 18f) guidance += "Turn more to the right."
+    }
+
     if ((leftEyeOpenProbability ?: 1f) < 0.45f || (rightEyeOpenProbability ?: 1f) < 0.45f) {
         guidance += "Remove glasses or headwear if it blocks the eyes."
     }
     if (meshPoints.size < 48) guidance += "Move closer and keep hair/headwear away from the face."
+    
     return if (guidance.isEmpty()) {
-        listOf("Face mesh locked. Keep light falling evenly on your skin.")
+        listOf(if (isFrontalStage) "Face mesh locked. Keep light falling evenly." else "Profile pose locked. Hold steady.")
     } else {
         guidance
     }
