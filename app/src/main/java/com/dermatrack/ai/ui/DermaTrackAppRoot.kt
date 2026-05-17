@@ -290,7 +290,15 @@ private fun ClinicalReportCard(report: ClinicalReport) {
 @Composable
 private fun ProgressMetrics(progress: LongitudinalProgress) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Baseline Change", style = MaterialTheme.typography.labelLarge)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Baseline Change", style = MaterialTheme.typography.labelLarge)
+            Text(
+                text = progress.trend.label.uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                color = Color(progress.trend.color),
+                fontWeight = FontWeight.Bold,
+            )
+        }
         MetricRow("Follow-up window", "${progress.daysSinceBaseline} days")
         MetricRow("Acne lesion count", progress.lesionCountDeltaPercent.percentDelta())
         MetricRow("Erythema index", progress.erythemaDelta.signedDecimal())

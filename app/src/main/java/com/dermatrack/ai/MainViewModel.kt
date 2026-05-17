@@ -40,7 +40,14 @@ data class LongitudinalProgress(
     val lesionCountDeltaPercent: Float,
     val erythemaDelta: Float,
     val pigmentationDelta: Float,
+    val trend: ScanTrend = ScanTrend.Stable,
 )
+
+enum class ScanTrend(val label: String, val color: Long) {
+    Improving("Improving", 0xFF73D6B5),
+    Stable("Stable", 0xFFE2B05B),
+    Worsening("Worsening", 0xFFB3261E),
+}
 
 enum class AcneSeverityGrade(val label: String) {
     Clear("Clear"),
@@ -157,10 +164,20 @@ private fun List<ScanEntity>.toLongitudinalProgress(): LongitudinalProgress? {
     val days = java.util.concurrent.TimeUnit.MILLISECONDS.toDays(
         latest.capturedAtEpochMillis - baseline.capturedAtEpochMillis,
     )
+    val lesionDelta = latest.acneLesionCount - baseline.acneLesionCount
+    val erythemaDelta = latest.erythemaIndex - baseline.erythemaIndex
+    
+    val trend = when {
+        lesionDelta < 0 || erythemaDelta < -3f -> ScanTrend.Improving
+        lesionDelta > 2 || erythemaDelta > 3f -> ScanTrend.Worsening
+        else -> ScanTrend.Stable
+    }
+
     return LongitudinalProgress(
         daysSinceBaseline = days,
-        lesionCountDeltaPercent = ((latest.acneLesionCount - baseline.acneLesionCount).toFloat() / baselineLesions) * 100f,
-        erythemaDelta = latest.erythemaIndex - baseline.erythemaIndex,
+        lesionCountDeltaPercent = ((lesionDelta).toFloat() / baselineLesions) * 100f,
+        erythemaDelta = erythemaDelta,
         pigmentationDelta = latest.melaninDistribution - baseline.melaninDistribution,
+        trend = trend
     )
 }

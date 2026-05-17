@@ -14,6 +14,7 @@ data class FaceTrackingState(
     val leftEyeOpenProbability: Float? = null,
     val rightEyeOpenProbability: Float? = null,
     val guidance: List<String> = listOf("Position your face inside the guide."),
+    val skinToneCategory: com.dermatrack.ai.analysis.FitzpatrickGroup = com.dermatrack.ai.analysis.FitzpatrickGroup.V,
 ) {
     val isStraightEnough: Boolean
         get() = detected && kotlin.math.abs(yawDegrees) <= 10f && kotlin.math.abs(rollDegrees) <= 8f

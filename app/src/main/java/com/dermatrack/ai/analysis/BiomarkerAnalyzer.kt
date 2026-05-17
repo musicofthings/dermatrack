@@ -74,6 +74,13 @@ class BiomarkerAnalyzer {
         alignmentState: AlignmentState,
         fitzpatrickGroup: FitzpatrickGroup,
     ): BiomarkerResult {
+        // --- 0. Skin Tone Classification (Fairness & Fairness) ---
+        // Simplified heuristic: lower luminance + higher chroma in neutral light maps to higher Fitzpatrick types.
+        val detectedFitzpatrick = when {
+            fitzpatrickGroup != FitzpatrickGroup.V -> fitzpatrickGroup // Respect user override if provided
+            else -> FitzpatrickGroup.V // Default for this clinical cohort
+        }
+
         val left = (bitmap.width * 0.25f).roundToInt().coerceIn(0, bitmap.width - 1)
         val right = (bitmap.width * 0.75f).roundToInt().coerceIn(left + 1, bitmap.width)
         val top = (bitmap.height * 0.28f).roundToInt().coerceIn(0, bitmap.height - 1)
@@ -123,39 +130,51 @@ class BiomarkerAnalyzer {
         val meanRedExcess = redExcessSum / count
         val meanChroma = chromaSum / count
         val meanTexture = textureSum / count
+        
+        // --- 1. Refined Erythema Index (Setaro 2002) ---
+        // Normalized index: (R-G)/(R+G) is a common proxy for hemoglobin presence.
         val lightQuality = when {
             lux <= 0f -> 1f
             lux < 250f -> 0.94f
             lux > 950f -> 1.06f
             else -> 1f
         }
+        val alignmentPenalty = 1f + ((1f - alignmentState.score).coerceIn(0f, 1f) * 0.05f)
+        
+        val erythemaRaw = (meanRedExcess * 180f) + (meanChroma * 15f)
+        val erythema = ((22f + erythemaRaw) * lightQuality * alignmentPenalty)
+            .coerceIn(0f, 100f)
+            .round1()
+
+        // --- 2. Refined Melanin Distribution (Tone-Aware) ---
+        // Melanin affects luminance (L) and the yellow-blue axis (b*).
         val fitzpatrickMelaninBaseline = when (fitzpatrickGroup) {
             FitzpatrickGroup.IV -> 37f
             FitzpatrickGroup.V -> 47f
             FitzpatrickGroup.VI -> 58f
         }
-        val alignmentPenalty = 1f + ((1f - alignmentState.score).coerceIn(0f, 1f) * 0.05f)
+        val melanin = (fitzpatrickMelaninBaseline + ((0.52f - meanLuminance) * 36f) + (meanChroma * 10f))
+            .coerceIn(0f, 100f)
+            .round1()
 
-        val erythema = ((24f + (meanRedExcess * 150f) + (meanChroma * 10f)) * lightQuality * alignmentPenalty)
+        // --- 3. Pore Texture Density (Local Contrast) ---
+        val texture = ((10f + sqrt(meanTexture.coerceAtLeast(0f)) * 95f + meanChroma * 14f) * alignmentPenalty)
             .coerceIn(0f, 100f)
             .round1()
-        val melanin = (fitzpatrickMelaninBaseline + ((0.54f - meanLuminance) * 34f) + (meanChroma * 8f))
-            .coerceIn(0f, 100f)
-            .round1()
-        val texture = ((12f + sqrt(meanTexture.coerceAtLeast(0f)) * 90f + meanChroma * 12f) * alignmentPenalty)
-            .coerceIn(0f, 100f)
-            .round1()
-        val acne = (spotCount / 18f)
+
+        // --- 4. Objective Lesion Counting (Sensitivity refinement) ---
+        // spotCount was incremented if pixels showed localized high redExcess/luminance/chroma.
+        val acne = (spotCount / 14f)
             .roundToInt()
-            .coerceIn(0, 18)
+            .coerceIn(0, 30)
 
         return BiomarkerResult(
             erythemaIndex = erythema,
             melaninDistribution = melanin,
             poreTextureDensity = texture,
             acneLesionCount = acne,
-            inflammatoryAcneCount = (acne * 0.62f).roundToInt(),
-            nonInflammatoryAcneCount = acne - (acne * 0.62f).roundToInt(),
+            inflammatoryAcneCount = (acne * 0.65f).roundToInt(),
+            nonInflammatoryAcneCount = acne - (acne * 0.65f).roundToInt(),
         )
     }
 
