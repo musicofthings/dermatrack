@@ -1,10 +1,28 @@
 {
-  "session_start_time": "2026-05-17T07:28:20Z",
-  "last_updated": "2026-05-17T07:28:20Z",
-  "active_task": "unknown",
-  "phase": "unknown",
-  "next_action": "read session_handover.md",
+  "session_start_time": "2026-05-31T08:28:52Z",
+  "last_updated": "2026-05-31T08:35:00Z",
+  "active_task": "DermaTrack AI — post-code-review cleanup landed; next milestone is populating real ML model assets (MediaPipe Face Landmarker .task + TFLite biomarker models)",
+  "phase": "between code-review fixes (committed bc137bd) and model-asset population",
+  "next_action": "Drop MediaPipe Face Landmarker .task into app/src/main/assets/models/ and wire real inference in MediaPipeFaceLandmarker.estimateAlignment (currently returns 0f stub)",
   "compact_count": 0,
   "session_cost_usd": "0",
-  "changed_files": []
+  "changed_files": [
+    "session_handover.md",
+    "app/src/main/java/com/dermatrack/ai/analysis/BiomarkerAnalyzer.kt",
+    "app/src/main/java/com/dermatrack/ai/MainViewModel.kt",
+    "app/src/main/java/com/dermatrack/ai/ui/DermaTrackAppRoot.kt",
+    "app/src/main/java/com/dermatrack/ai/capture/FaceDetectionFrameAnalyzer.kt",
+    "app/src/main/java/com/dermatrack/ai/analysis/MediaPipeFaceLandmarker.kt",
+    ".claude/session/state.json",
+    "CLAUDE.md",
+    "/Users/theranosis_dx/.claude/plugins/marketplaces/local-desktop-app-uploads/context-engineering-kit/.claude/hooks/usage-sentinel.sh"
+  ],
+  "subagents_running": 0,
+  "last_stop": "2026-05-31T08:40:05Z",
+  "last_stop_reason": "end_turn",
+  "session_id": "027af6dd-d709-4d42-9019-7e72ac55f83f",
+  "transcript_path": "/Users/theranosis_dx/.claude/projects/-Users-theranosis-dx-projects-dermatrack-ai/027af6dd-d709-4d42-9019-7e72ac55f83f.jsonl",
+  "last_stop_turn": 0,
+  "last_activity": "2026-05-31T08:40:05Z",
+  "state_source": "manual-context-health-fix"
 }
