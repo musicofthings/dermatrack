@@ -28,11 +28,9 @@ class MediaPipeFaceLandmarker(private val context: Context) : FaceLandmarkModel 
     }
 
     override suspend fun estimateAlignment(frame: ByteArray): Float {
-        // This will perform real landmark-based alignment scoring
-        // once the .task asset is provided and the landmarker is initialized.
-        if (faceLandmarker == null) return 0f
-        
-        // Logic to decode frame and run inference goes here.
-        return 0.5f 
+        // Real landmark-based alignment scoring is not yet implemented.
+        // Returning 0f (no signal) until the .task asset ships AND inference is wired —
+        // CLAUDE.md forbids fabricated model outputs, so do NOT return a placeholder confidence.
+        return 0f
     }
 }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -37,7 +38,9 @@ data class ClinicalReport(
 
 data class LongitudinalProgress(
     val daysSinceBaseline: Long,
-    val lesionCountDeltaPercent: Float,
+    val lesionCountDeltaAbsolute: Int,
+    /** null when the baseline scan had zero lesions — a percent change is undefined there. */
+    val lesionCountDeltaPercent: Float?,
     val erythemaDelta: Float,
     val pigmentationDelta: Float,
     val trend: ScanTrend = ScanTrend.Stable,
@@ -94,7 +97,10 @@ class MainViewModel(
         onError: (Throwable) -> Unit,
     ) {
         viewModelScope.launch {
-            runCatching {
+            // Step 1: analyse + persist the scan row atomically with the image file.
+            // If anything in here fails, delete the image so we don't leak orphaned JPEGs and
+            // do NOT surface a half-committed scan to the UI.
+            val scanCommit = runCatching {
                 val analysis = withContext(Dispatchers.IO) {
                     analyzer.analyzeCapturedFrame(
                         frame = imageFile.readBytes(),
@@ -109,22 +115,38 @@ class MainViewModel(
                     biomarkers = analysis.result,
                     alignmentScore = alignmentState.score,
                 )
-                withContext(Dispatchers.IO) {
-                    vaultRepository.exportMarkdownMetadata(
-                        scanId = scanId,
-                        biomarkers = analysis.result,
-                        lux = lux,
-                        analysisSource = analysis.source,
-                    )
-                }
-            }.onSuccess {
-                onComplete()
-            }.onFailure { throwable ->
+                ScanCommit(scanId = scanId, analysis = analysis)
+            }
+
+            val commit = scanCommit.getOrElse { throwable ->
                 imageFile.delete()
                 onError(throwable)
+                return@launch
             }
+
+            // Step 2: markdown export is best-effort metadata, not a clinical record.
+            // Failure here MUST NOT delete the image or roll back the scan row — both are valid.
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    vaultRepository.exportMarkdownMetadata(
+                        scanId = commit.scanId,
+                        biomarkers = commit.analysis.result,
+                        lux = lux,
+                        analysisSource = commit.analysis.source,
+                    )
+                }
+            }.onFailure {
+                Log.w("MainViewModel", "Markdown export failed for scan ${commit.scanId}", it)
+            }
+
+            onComplete()
         }
     }
+
+    private data class ScanCommit(
+        val scanId: Long,
+        val analysis: com.dermatrack.ai.analysis.BiomarkerAnalysis,
+    )
 
     fun addInventoryItem(name: String, ingredients: String) {
         viewModelScope.launch {
@@ -160,24 +182,32 @@ private fun List<ScanEntity>.toLongitudinalProgress(): LongitudinalProgress? {
     if (size < 2) return null
     val latest = first()
     val baseline = last()
-    val baselineLesions = baseline.acneLesionCount.coerceAtLeast(1)
     val days = java.util.concurrent.TimeUnit.MILLISECONDS.toDays(
-        latest.capturedAtEpochMillis - baseline.capturedAtEpochMillis,
+        (latest.capturedAtEpochMillis - baseline.capturedAtEpochMillis).coerceAtLeast(0L),
     )
     val lesionDelta = latest.acneLesionCount - baseline.acneLesionCount
     val erythemaDelta = latest.erythemaIndex - baseline.erythemaIndex
-    
+
     val trend = when {
         lesionDelta < 0 || erythemaDelta < -3f -> ScanTrend.Improving
         lesionDelta > 2 || erythemaDelta > 3f -> ScanTrend.Worsening
         else -> ScanTrend.Stable
     }
 
+    // A percent change from 0 is undefined; report null and let the UI surface the absolute count
+    // instead. Coercing baseline to 1 produced 400%-style numbers that read as catastrophic.
+    val lesionPercent = if (baseline.acneLesionCount > 0) {
+        (lesionDelta.toFloat() / baseline.acneLesionCount) * 100f
+    } else {
+        null
+    }
+
     return LongitudinalProgress(
         daysSinceBaseline = days,
-        lesionCountDeltaPercent = ((lesionDelta).toFloat() / baselineLesions) * 100f,
+        lesionCountDeltaAbsolute = lesionDelta,
+        lesionCountDeltaPercent = lesionPercent,
         erythemaDelta = erythemaDelta,
         pigmentationDelta = latest.melaninDistribution - baseline.melaninDistribution,
-        trend = trend
+        trend = trend,
     )
 }

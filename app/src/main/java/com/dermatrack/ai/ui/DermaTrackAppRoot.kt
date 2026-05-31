@@ -300,7 +300,7 @@ private fun ProgressMetrics(progress: LongitudinalProgress) {
             )
         }
         MetricRow("Follow-up window", "${progress.daysSinceBaseline} days")
-        MetricRow("Acne lesion count", progress.lesionCountDeltaPercent.percentDelta())
+        MetricRow("Acne lesion count", lesionDeltaLabel(progress))
         MetricRow("Erythema index", progress.erythemaDelta.signedDecimal())
         MetricRow("Pigmentation evenness", progress.pigmentationDelta.signedDecimal())
     }
@@ -330,6 +330,16 @@ private fun BiomarkerGrid(scan: ScanEntity) {
 private fun Float.percentDelta(): String {
     val prefix = if (this > 0f) "+" else ""
     return "$prefix${"%.0f".format(this)}%"
+}
+
+private fun lesionDeltaLabel(progress: LongitudinalProgress): String {
+    val abs = progress.lesionCountDeltaAbsolute
+    val absPrefix = if (abs > 0) "+" else ""
+    val absText = "$absPrefix$abs"
+    return when (val pct = progress.lesionCountDeltaPercent) {
+        null -> "$absText (baseline 0)"
+        else -> "$absText  (${pct.percentDelta()})"
+    }
 }
 
 private fun Float.signedDecimal(): String {
@@ -508,12 +518,11 @@ private fun CaptureScreen(
     }
 
     DisposableEffect(imageAnalysis, analysisExecutor) {
-        imageAnalysis.setAnalyzer(
-            analysisExecutor,
-            FaceDetectionFrameAnalyzer(stage = { workflowStage }) { faceTracking = it },
-        )
+        val analyzer = FaceDetectionFrameAnalyzer(stage = { workflowStage }) { faceTracking = it }
+        imageAnalysis.setAnalyzer(analysisExecutor, analyzer)
         onDispose {
             imageAnalysis.clearAnalyzer()
+            analyzer.close()  // release ML Kit native FaceDetector — CameraX rebinds otherwise leak it
             analysisExecutor.shutdown()
         }
     }

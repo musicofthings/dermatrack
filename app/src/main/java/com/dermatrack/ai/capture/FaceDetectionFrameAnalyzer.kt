@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class FaceDetectionFrameAnalyzer(
     private val stage: () -> CaptureWorkflowStage = { CaptureWorkflowStage.Setup },
     private val onFaceTracking: (FaceTrackingState) -> Unit,
-) : ImageAnalysis.Analyzer {
+) : ImageAnalysis.Analyzer, AutoCloseable {
     private val detector: FaceDetector = FaceDetection.getClient(
         FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
@@ -29,7 +29,14 @@ class FaceDetectionFrameAnalyzer(
             .build(),
     )
     private val frameInFlight = AtomicBoolean(false)
+    // CameraX `analyze()` runs on a background executor; if the host configures a multi-thread
+    // pool, plain Long read/write can tear on 32-bit ARM and lacks a happens-before edge.
+    @Volatile
     private var lastAnalyzedAt = 0L
+
+    override fun close() {
+        detector.close()
+    }
 
     @OptIn(ExperimentalGetImage::class)
     override fun analyze(imageProxy: ImageProxy) {
