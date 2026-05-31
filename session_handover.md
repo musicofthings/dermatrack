@@ -1,145 +1,133 @@
-# Session Handover: DermaTrack AI
+# Session Handover
+_Generated: 2026-05-31T06:38:00Z_
+_Branch: main_
+_Trigger: user request (`/handover` via code review) | Context at compact: 100% of pro window_
+_Compact count this project: 0_
 
-## Current State
+---
 
-The repository has been initialized, committed, and pushed to:
+## 🎯 Active Task
+**What we're building/fixing:**
+DermaTrack AI — native Android (Kotlin + Compose) skin-biomarker tracking app. Last branch of work integrated scientifically validated clinical features from the PRD: standardized capture, IGA-style severity proxy, baseline-to-follow-up deltas, expanded face mesh + clinical reticle, and a deterministic biomarker analyzer with image-derived heuristic fallback. ML model slots (TFLite + MediaPipe Face Landmarker) are scaffolded but not yet populated.
 
-https://github.com/musicofthings/dermatrack.git
+**Phase:** Post-PRD-integration code review, before model-asset population.
+**Next action:** Run `/code-review` on the diff `1ba3f97..bf19fbc` (everything after the initial foundation), focused on `MainViewModel.kt`, `BiomarkerAnalyzer.kt`, `FaceDetectionFrameAnalyzer.kt`, and `DermaTrackAppRoot.kt`.
 
-Initial commit:
+---
 
-```text
+## ✅ Completed This Session
+- [x] CameraX `ImageCapture` writes JPEG to private app storage before scan record
+- [x] `MainViewModel.recordCapturedScan(...)` decodes saved frame, routes through `BiomarkerAnalyzer.analyzeCapturedFrame(...)`
+- [x] `BiomarkerAnalyzer` image-derived heuristic (records `ImageDerivedHeuristic` source); decode-fail falls back to `DeterministicFallback`
+- [x] Model asset slots documented at `app/src/main/assets/models/README.md`; `.tflite`/`.task` marked `noCompress`
+- [x] Expanded mesh coverage, clinical reticle, stage-aware guidance, build errors resolved
+- [x] PRD clinical features integrated (IGA proxy, erythema/melanin/pore metrics, longitudinal deltas)
+- [x] Gradle wrapper committed, `./gradlew :app:assembleDebug` passes
+
+---
+
+## 🔄 In Progress (Exact Resume Point)
+**Branch:** `main`
+**Last commit:** `bf19fbc Integrate scientifically validated clinical features from PRD`
+**Next immediate action:** Code review of the post-foundation diff and address findings inline; then begin populating real model assets (MediaPipe Face Landmarker `.task` + TFLite biomarker models).
+
+---
+
+## 📋 Remaining Work
+1. Code review on current diff — focus on `MainViewModel`, `BiomarkerAnalyzer`, `FaceDetectionFrameAnalyzer`, `DermaTrackAppRoot`.
+2. Add MediaPipe Face Landmarker task asset.
+3. Add TFLite models: erythema, melanin distribution, pore/texture density, acne lesion classification.
+4. Replace `estimateFromCaptureQualityFallback` with real image-frame inference.
+5. Validate against Fitzpatrick IV–VI labeled datasets before presenting biomarkers as clinically meaningful.
+6. Restrained agentic ingredient-pivot logic after ≥21d longitudinal evidence (no coach persona).
+
+---
+
+## 🏗 Architecture Decisions Made
+| Decision | Rationale | Date |
+|----------|-----------|------|
+| Room DB local-only; no network for biometric data | Privacy / data minimization | 2026-05 |
+| Capture path: CameraX `ImageCapture` → private app storage → analyzer | Deterministic input vs. live preview frames | 2026-05 |
+| Analyzer fallback chain: ImageDerivedHeuristic → DeterministicFallback | Build degrades safely until real models land | 2026-05 |
+| `.tflite` / `.task` marked `noCompress` in Gradle | TFLite/MediaPipe require uncompressed assets | 2026-05 |
+| Clinical reporting UX over agentic coach persona | PRD direction; trust before delight | 2026-05 |
+
+---
+
+## 🔧 Commands to Resume
+```bash
+# On any machine after git pull:
+git pull origin main
+bash scripts/session_sync.sh --load  # (script lives in context-engineering-kit, not this repo)
+
+# Android build:
+./gradlew :app:assembleDebug
+
+# Python backend syntax check:
+python3 -m py_compile backend/app/*.py
+
+# In Claude Code:
+# /context-health     — verify hooks
+# /handover           — refresh this file
+# /token-status       — check context usage
+# /code-review        — review current diff
+```
+
+---
+
+## 📁 Files Modified This Session (since 1ba3f97)
+| File | Status |
+|------|--------|
+| README.md | modified |
+| app/build.gradle.kts | modified |
+| app/src/main/AndroidManifest.xml | modified |
+| app/src/main/assets/models/README.md | added |
+| app/src/main/java/com/dermatrack/ai/MainViewModel.kt | modified (+111) |
+| app/src/main/java/com/dermatrack/ai/analysis/BiomarkerAnalyzer.kt | added (+165) |
+| app/src/main/java/com/dermatrack/ai/analysis/MediaPipeFaceLandmarker.kt | added |
+| app/src/main/java/com/dermatrack/ai/capture/FaceDetectionFrameAnalyzer.kt | added |
+| app/src/main/java/com/dermatrack/ai/capture/FaceTrackingState.kt | added |
+| app/src/main/java/com/dermatrack/ai/data/AppContainer.kt | modified |
+| app/src/main/java/com/dermatrack/ai/data/VaultRepository.kt | modified |
+| app/src/main/java/com/dermatrack/ai/ui/DermaTrackAppRoot.kt | modified (+746) |
+| gradle.properties | modified |
+| gradle/libs.versions.toml | modified |
+| gradle/wrapper/* | added |
+| gradlew, gradlew.bat | added |
+| session_handover.md | modified |
+| settings.gradle.kts | modified |
+
+---
+
+## 🌿 Git Context
+```
+Branch  : main
+Commit  : bf19fbc Integrate scientifically validated clinical features from PRD
+Status  : dirty (.claude/session/* + worktree pointers only — no source changes)
+```
+
+Recent commits:
+```
+bf19fbc Integrate scientifically validated clinical features from PRD
+7821d06 Refine UI: expand mesh coverage, add clinical reticle, and fix stage-aware guidance
+ead49ce Resolve build errors and implement facial alignment architecture
 1ba3f97 Initial DermaTrack AI foundation
 ```
 
-The working tree was clean after push.
+---
 
-## What Is Built
+## ⚠️ Critical Rules
+- Never commit secrets or API keys.
+- Room DB is local-only; **no network calls for biometric data**.
+- TFLite + MediaPipe slots are scaffolded but empty — **do not fabricate model outputs**; only present heuristic source labels.
+- Validate any clinical-looking metric against Fitzpatrick IV–VI labels before user-facing claims.
+- Run `/handover` before switching devices.
 
-- Native Android project using Kotlin and Jetpack Compose.
-- Room schema for local biomarker scan records and inventory items.
-- Private app-storage vault path for raw scan image slots.
-- Markdown-compatible scan metadata export.
-- CameraX capture screen with:
-  - front camera preview,
-  - standardized capture guidance,
-  - ML Kit face tracking overlay,
-  - alignment reticle,
-  - light-meter capture gate.
-- Clinical report dashboard with:
-  - biomarker bars,
-  - melanin trend chart,
-  - baseline-to-latest progress metrics,
-  - IGA-style acne severity proxy for trend tracking,
-  - clinical disclaimer,
-  - scan history.
-- Inventory logger for product-to-result correlation.
-- Local regimen decision logic for biomarker deltas and ingredient pivots.
-- FastAPI backend skeleton for non-biometric agentic orchestration and future Amazon India PA-API integration.
+---
 
-## Local Build Status
+## 🧬 Bioinformatics Context (if applicable)
+- Not applicable — this is a mobile clinical-imaging project, not a genomics pipeline.
 
-Android debug build now passes from this workspace:
-
-```bash
-./gradlew :app:assembleDebug
-```
-
-Python backend files were syntax-checked successfully with:
-
-```bash
-python3 -m py_compile backend/app/*.py
-```
-
-## Android Setup Steps
-
-1. Install Android Studio.
-2. Ensure these SDK components are installed:
-   - Android SDK Platform 35
-   - Android SDK Build-Tools
-   - Android Emulator
-   - Android SDK Platform-Tools
-   - JDK 17 preferred
-3. Open this folder in Android Studio:
-
-```bash
-/Users/theranosis_dx/projects/dermatrack_ai
-```
-
-4. Let Gradle sync.
-5. Confirm these wrapper files exist:
-
-```text
-./gradlew
-./gradlew.bat
-gradle/wrapper/
-```
-
-6. Build the debug app:
-
-```bash
-./gradlew :app:assembleDebug
-```
-
-7. Run on an emulator or physical Android device.
-
-## Recommended Test Pass
-
-Use a physical Android device for best results because the app uses CameraX and `Sensor.TYPE_LIGHT`.
-
-Test:
-
-- Camera permission flow.
-- Front camera preview appears.
-- Ghost overlay renders over preview.
-- Alignment reticle renders.
-- Light gate updates when a light sensor exists.
-- `Record Scan` creates a scan.
-- Report screen shows biomarker bars and trend chart.
-- Inventory entries save locally.
-- App restart preserves scans and products through Room.
-
-## Known Limitation
-
-The current biomarker analyzer is a deterministic fallback, not a clinical model.
-
-Follow-up work in this session added the image-frame path:
-
-- CameraX `ImageCapture` now writes a real JPEG into private app storage before recording a scan.
-- `MainViewModel.recordCapturedScan(...)` reads the saved private frame and routes it through `BiomarkerAnalyzer.analyzeCapturedFrame(...)`.
-- The current analyzer uses a simple image-derived heuristic after a successful JPEG decode and records `ImageDerivedHeuristic` in private markdown metadata.
-- Decode failures still fall back to `DeterministicFallback`.
-- Expected model asset names are documented under `app/src/main/assets/models/README.md`.
-- TFLite and MediaPipe task files are marked `noCompress` in Gradle resources.
-
-Remaining fallback method:
-
-```kotlin
-BiomarkerAnalyzer.estimateFromCaptureQualityFallback(...)
-```
-
-Next engineering milestone:
-
-1. Add MediaPipe Face Landmarker task asset.
-2. Add TFLite models for:
-   - erythema,
-   - melanin distribution,
-   - pore/texture density,
-   - acne lesion classification.
-3. Replace fallback inference with real image-frame inference.
-4. Validate against Fitzpatrick IV-VI labeled datasets before presenting any biomarker as clinically meaningful.
-
-## Product Direction
-
-Keep the UX closer to clinical reporting than an agentic coach persona.
-
-The agentic layer should appear as restrained decision logic after enough longitudinal evidence exists, especially for ingredient pivot suggestions such as stagnant melanin distribution after 21 days.
-
-Prioritize the validated measurement MVP before expanding coaching:
-
-1. Standardized capture controls.
-2. Acne lesion detection/counting.
-3. IGA/GEA-style severity trend scoring.
-4. Erythema/redness quantification.
-5. Pigmentation and spot/evenness metrics.
-6. Baseline-to-follow-up deltas and visual trend reporting.
+---
+_Auto-updated by `pre-compact.sh` hook and `/handover` skill._
+_Read this at the start of every session. Update with `/handover`._
