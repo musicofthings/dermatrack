@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import com.dermatrack.ai.analysis.BiomarkerAnalysisSource
 import com.dermatrack.ai.analysis.BiomarkerResult
+import com.dermatrack.ai.analysis.FitzpatrickGroup
 import java.io.File
 
 class VaultRepository(private val context: Context) {
@@ -26,6 +27,7 @@ class VaultRepository(private val context: Context) {
         biomarkers: BiomarkerResult,
         lux: Float,
         analysisSource: BiomarkerAnalysisSource,
+        fitzpatrickGroup: FitzpatrickGroup,
     ): File {
         val file = File(exportDir, "scan_$scanId.md")
         file.writeText(
@@ -34,6 +36,7 @@ class VaultRepository(private val context: Context) {
             |
             |Raw biometric image: stored in private app storage only.
             |Analysis source: ${analysisSource.name}
+            |Fitzpatrick group used: ${fitzpatrickGroup.name}
             |
             || Biomarker | Value |
             || --- | ---: |

@@ -26,10 +26,13 @@ and next milestone. This file is for rules that do not change between sessions.
 
 ## Non-negotiable rules
 
-1. **Room DB is local-only. Never add network calls for biometric data.**
+1. **Room DB is local-only. Never add network calls for biometric data by default.**
    Inventory + scans + images live entirely in the app's private storage. The
    FastAPI backend skeleton in `backend/` is for non-biometric orchestration
-   only (e.g. future Amazon India PA-API product lookup).
+   only (e.g. future Amazon India PA-API product lookup). **Exception:** optional
+   Autoderm cloud screening (`integration/autoderm/`) is opt-in only, uses
+   `save_image=false`, stores results in `autoderm_screenings` (not local
+   biomarker fields), and must be labeled as third-party cloud on the report UI.
 
 2. **Never fabricate model outputs.** TFLite + MediaPipe model slots in
    `app/src/main/assets/models/` are currently empty. If a model isn't loaded,

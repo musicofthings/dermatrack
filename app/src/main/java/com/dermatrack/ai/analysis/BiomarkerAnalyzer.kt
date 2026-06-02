@@ -3,7 +3,6 @@ package com.dermatrack.ai.analysis
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
-import com.dermatrack.ai.capture.AlignmentState
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -22,6 +21,7 @@ data class BiomarkerResult(
 data class BiomarkerAnalysis(
     val result: BiomarkerResult,
     val source: BiomarkerAnalysisSource,
+    val fitzpatrickGroup: FitzpatrickGroup,
 )
 
 enum class BiomarkerAnalysisSource {
@@ -34,7 +34,6 @@ class BiomarkerAnalyzer {
     suspend fun analyzeCapturedFrame(
         frame: ByteArray,
         lux: Float,
-        alignmentState: AlignmentState,
         fitzpatrickGroup: FitzpatrickGroup = FitzpatrickGroup.V,
     ): BiomarkerAnalysis {
         require(frame.isNotEmpty()) { "Captured frame is empty." }
@@ -42,22 +41,19 @@ class BiomarkerAnalyzer {
         val bitmap = decodeSampledBitmap(frame)
         if (bitmap == null) {
             return BiomarkerAnalysis(
-                result = estimateFromCaptureQualityFallback(lux = lux, alignmentState = alignmentState),
+                result = estimateFromCaptureQualityFallback(lux = lux),
                 source = BiomarkerAnalysisSource.DeterministicFallback,
+                fitzpatrickGroup = fitzpatrickGroup,
             )
         }
 
-        val result = estimateFromImageHeuristic(
+        val analysis = estimateFromImageHeuristic(
             bitmap = bitmap,
             lux = lux,
-            alignmentState = alignmentState,
             fitzpatrickGroup = fitzpatrickGroup,
         )
         bitmap.recycle()
-        return BiomarkerAnalysis(
-            result = result,
-            source = BiomarkerAnalysisSource.ImageDerivedHeuristic,
-        )
+        return analysis
     }
 
     private fun decodeSampledBitmap(frame: ByteArray): Bitmap? {
@@ -71,13 +67,8 @@ class BiomarkerAnalyzer {
     private fun estimateFromImageHeuristic(
         bitmap: Bitmap,
         lux: Float,
-        alignmentState: AlignmentState,
         fitzpatrickGroup: FitzpatrickGroup,
-    ): BiomarkerResult {
-        // --- 0. Skin tone gating ---
-        // Auto-detection is not implemented; until a tone classifier ships, trust the caller's
-        // value. Keeping the variable name makes it the single source of truth downstream so a
-        // future detector only has to populate this binding.
+    ): BiomarkerAnalysis {
         val detectedFitzpatrick = fitzpatrickGroup
         val spotThreshold = spotThresholdFor(detectedFitzpatrick)
 
@@ -85,6 +76,10 @@ class BiomarkerAnalyzer {
         val right = (bitmap.width * 0.75f).roundToInt().coerceIn(left + 1, bitmap.width)
         val top = (bitmap.height * 0.28f).roundToInt().coerceIn(0, bitmap.height - 1)
         val bottom = (bitmap.height * 0.76f).roundToInt().coerceIn(top + 1, bitmap.height)
+        val roiCenterX = (left + right) / 2f
+        val roiCenterY = (top + bottom) / 2f
+        val roiRadiusX = ((right - left) / 2f).coerceAtLeast(1f)
+        val roiRadiusY = ((bottom - top) / 2f).coerceAtLeast(1f)
         val step = max(2, min(bitmap.width, bitmap.height) / 96)
 
         var count = 0
@@ -96,9 +91,17 @@ class BiomarkerAnalyzer {
 
         var y = top
         while (y < bottom) {
-            var previousLuminance: Float? = null  // reset per row — texture deltas must not cross row boundaries
+            var previousLuminance: Float? = null
             var x = left
             while (x < right) {
+                val normalizedDx = (x - roiCenterX) / roiRadiusX
+                val normalizedDy = (y - roiCenterY) / roiRadiusY
+                val insideFaceMask =
+                    (normalizedDx * normalizedDx) + (normalizedDy * normalizedDy) <= 1.0f
+                if (!insideFaceMask) {
+                    x += step
+                    continue
+                }
                 val pixel = bitmap.getPixel(x, y)
                 val r = Color.red(pixel).toFloat()
                 val g = Color.green(pixel).toFloat()
@@ -126,7 +129,11 @@ class BiomarkerAnalyzer {
         }
 
         if (count == 0) {
-            return estimateFromCaptureQualityFallback(lux = lux, alignmentState = alignmentState)
+            return BiomarkerAnalysis(
+                result = estimateFromCaptureQualityFallback(lux = lux),
+                source = BiomarkerAnalysisSource.DeterministicFallback,
+                fitzpatrickGroup = detectedFitzpatrick,
+            )
         }
 
         val meanLuminance = luminanceSum / count
@@ -134,10 +141,6 @@ class BiomarkerAnalyzer {
         val meanChroma = chromaSum / count
         val meanTexture = textureSum / count
 
-        // --- 1. Refined Erythema Index (Setaro 2002) ---
-        // Normalized index: (R-G)/(R+G) is a common proxy for hemoglobin presence.
-        // Alignment quality is reported separately on ScanEntity.alignmentScore — do not fold it
-        // into the biomarker magnitude (a misaligned shot should not look like more inflammation).
         val lightQuality = when {
             lux <= 0f -> 1f
             lux < 250f -> 0.94f
@@ -150,8 +153,6 @@ class BiomarkerAnalyzer {
             .coerceIn(0f, 100f)
             .round1()
 
-        // --- 2. Refined Melanin Distribution (Tone-Aware) ---
-        // Melanin affects luminance (L) and the yellow-blue axis (b*).
         val fitzpatrickMelaninBaseline = when (detectedFitzpatrick) {
             FitzpatrickGroup.IV -> 37f
             FitzpatrickGroup.V -> 47f
@@ -161,26 +162,27 @@ class BiomarkerAnalyzer {
             .coerceIn(0f, 100f)
             .round1()
 
-        // --- 3. Pore Texture Density (Local Contrast) ---
         val texture = (10f + sqrt(meanTexture.coerceAtLeast(0f)) * 95f + meanChroma * 14f)
             .coerceIn(0f, 100f)
             .round1()
 
-        // --- 4. Objective Lesion Counting (Sensitivity refinement) ---
-        // spotCount was incremented if pixels passed the tone-adjusted threshold.
         val acne = (spotCount / 14f)
             .roundToInt()
             .coerceIn(0, 30)
 
-        return buildBiomarkerResult(
-            erythema = erythema,
-            melanin = melanin,
-            texture = texture,
-            acne = acne,
+        return BiomarkerAnalysis(
+            result = buildBiomarkerResult(
+                erythema = erythema,
+                melanin = melanin,
+                texture = texture,
+                acne = acne,
+            ),
+            source = BiomarkerAnalysisSource.ImageDerivedHeuristic,
+            fitzpatrickGroup = detectedFitzpatrick,
         )
     }
 
-    fun estimateFromCaptureQualityFallback(lux: Float, alignmentState: AlignmentState): BiomarkerResult {
+    fun estimateFromCaptureQualityFallback(lux: Float): BiomarkerResult {
         val lightPenalty = when {
             lux <= 0f -> 1f
             lux < 250f -> 0.92f
@@ -190,7 +192,7 @@ class BiomarkerAnalyzer {
         val erythema = (31.5f * lightPenalty).round1()
         val melanin = 46.8f.round1()
         val texture = (22.4f * lightPenalty).round1()
-        val acne = (3 + ((1f - alignmentState.score) * 2)).roundToInt()
+        val acne = 3
 
         return buildBiomarkerResult(
             erythema = erythema,
@@ -219,8 +221,6 @@ class BiomarkerAnalyzer {
     )
 
     private fun spotThresholdFor(group: FitzpatrickGroup): SpotThreshold = when (group) {
-        // Absolute luminance of healthy skin drops as Fitzpatrick rises; the spot ceiling has to
-        // drop with it, otherwise every Fitzpatrick V/VI pixel passes the test.
         FitzpatrickGroup.IV -> SpotThreshold(redExcessFloor = 0.16f, luminanceCeiling = 0.55f, chromaFloor = 0.18f)
         FitzpatrickGroup.V -> SpotThreshold(redExcessFloor = 0.18f, luminanceCeiling = 0.42f, chromaFloor = 0.20f)
         FitzpatrickGroup.VI -> SpotThreshold(redExcessFloor = 0.20f, luminanceCeiling = 0.30f, chromaFloor = 0.22f)

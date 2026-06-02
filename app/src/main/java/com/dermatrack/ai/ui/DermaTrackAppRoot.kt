@@ -2,42 +2,57 @@ package com.dermatrack.ai.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.graphics.RectF
+import android.media.AudioManager
+import android.media.ExifInterface
+import android.media.ToneGenerator
+import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.util.Size as CameraSize
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
-import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.CameraController
+import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -50,6 +65,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.animation.core.LinearEasing
@@ -65,18 +81,27 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.ScrollState
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -88,18 +113,30 @@ import com.dermatrack.ai.LongitudinalProgress
 import com.dermatrack.ai.MainUiState
 import com.dermatrack.ai.MainViewModel
 import com.dermatrack.ai.capture.AlignmentState
-import com.dermatrack.ai.capture.FaceDetectionFrameAnalyzer
+import com.dermatrack.ai.capture.FaceMlKitAnalyzer
 import com.dermatrack.ai.capture.FaceTrackingState
+import com.dermatrack.ai.capture.NormalizedPoint
 import com.dermatrack.ai.capture.LightMeter
 import com.dermatrack.ai.capture.LuxGate
+import com.dermatrack.ai.analysis.FitzpatrickGroup
+import com.dermatrack.ai.data.model.CapturePose
 import com.dermatrack.ai.data.model.ProductEntity
 import com.dermatrack.ai.data.model.ScanEntity
+import com.dermatrack.ai.data.model.analysisSourceUserLabel
+import com.dermatrack.ai.data.model.capturePoseLabel
+import com.dermatrack.ai.data.model.fitzpatrickUserLabel
+import com.dermatrack.ai.data.model.isSuccess
+import com.dermatrack.ai.data.model.predictions
+import com.dermatrack.ai.data.model.AutodermScreeningEntity
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -108,16 +145,25 @@ private enum class AppTab { Report, Capture, Inventory }
 enum class CaptureWorkflowStage {
     Setup,
     MeshLock,
-    FrontTopDown,
-    FrontLeftRight,
-    TurnLeftPrompt,
-    LeftTopDown,
-    TurnRightPrompt,
-    RightTopDown,
-    Finalizing,
+    FrontVertical,
+    FrontHorizontal,
+    FrontCapture,
+    LeftProfilePrompt,
+    LeftProfileCapture,
+    RightProfilePrompt,
+    RightProfileCapture,
 }
 
 private enum class ScanDirection { None, TopDown, LeftRight }
+
+/** A captured-but-not-yet-analyzed frame, held until the user confirms in review. */
+private data class PendingCapture(
+    val pose: CapturePose,
+    val file: File,
+    val alignment: AlignmentState,
+    val lux: Float,
+    val fitzpatrick: FitzpatrickGroup,
+)
 
 private val CameraStreamResolutionSelector = ResolutionSelector.Builder()
     .setResolutionStrategy(
@@ -168,19 +214,22 @@ fun DermaTrackAppRoot(viewModel: MainViewModel) {
                 AppTab.Report -> ReportScreen(uiState)
                 AppTab.Capture -> CaptureScreen(
                     baselineLux = uiState.scans.firstOrNull()?.baselineLux ?: 520f,
+                    autodermCloudEnabled = uiState.autodermCloudEnabled,
+                    autodermApiConfigured = uiState.autodermApiConfigured,
+                    onAutodermCloudEnabledChange = viewModel::setAutodermCloudEnabled,
                     onCreateImageFile = viewModel::createPrivateScanImageFile,
-                    onRecord = { lux, alignmentState, imageFile, onComplete, onError ->
+                    onRecord = { lux, alignmentState, imageFile, fitzpatrickGroup, capturePose, onComplete, onError ->
                         viewModel.recordCapturedScan(
                             lux = lux,
                             alignmentState = alignmentState,
                             imageFile = imageFile,
-                            onComplete = {
-                                selectedTab = AppTab.Report
-                                onComplete()
-                            },
+                            fitzpatrickGroup = fitzpatrickGroup,
+                            capturePose = capturePose,
+                            onComplete = onComplete,
                             onError = onError,
                         )
                     },
+                    onSessionComplete = { selectedTab = AppTab.Report },
                 )
                 AppTab.Inventory -> InventoryScreen(
                     products = uiState.products,
@@ -199,7 +248,7 @@ private fun ClinicalTopBar() {
             Column {
                 Text("DermaTrack AI", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Clinical skin health biomarkers",
+                    "Skin biomarker tracking (research utility)",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -233,7 +282,7 @@ private fun ReportScreen(uiState: MainUiState) {
 @Composable
 private fun ClinicalDisclaimer() {
     Text(
-        text = "Grooming and health utility. For persistent acne, melasma, PIH, pain, bleeding, or rapid changes, consult a dermatologist.",
+        text = "Grooming and health utility — not a diagnosis. Biomarker values may be image heuristics until on-device models are validated. For persistent acne, melasma, PIH, pain, bleeding, or rapid changes, consult a dermatologist.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.fillMaxWidth(),
@@ -264,16 +313,30 @@ private fun ClinicalReportCard(report: ClinicalReport) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Latest Clinical Report", style = MaterialTheme.typography.titleMedium)
+            Text("Latest Report", style = MaterialTheme.typography.titleMedium)
+            Text(
+                report.scan.analysisSourceUserLabel(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                report.scan.fitzpatrickUserLabel(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             BiomarkerGrid(report.scan)
             Text(
-                "IGA-style severity proxy: ${report.acneSeverityGrade.label}",
+                "Lesion-count severity proxy (not validated IGA): ${report.acneSeverityGrade.label}",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             report.progress?.let {
                 HorizontalDivider()
                 ProgressMetrics(it)
+            }
+            report.autodermScreening?.let { screening ->
+                HorizontalDivider()
+                AutodermScreeningSection(screening)
             }
             HorizontalDivider()
             Text("Decision Logic", style = MaterialTheme.typography.labelLarge)
@@ -303,6 +366,84 @@ private fun ProgressMetrics(progress: LongitudinalProgress) {
         MetricRow("Acne lesion count", lesionDeltaLabel(progress))
         MetricRow("Erythema index", progress.erythemaDelta.signedDecimal())
         MetricRow("Pigmentation evenness", progress.pigmentationDelta.signedDecimal())
+    }
+}
+
+@Composable
+private fun AutodermScreeningSection(screening: AutodermScreeningEntity) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Autoderm cloud screening", style = MaterialTheme.typography.labelLarge)
+        Text(
+            "Third-party CE-marked model (autoderm.ai). Not a diagnosis — for clinician review only.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (screening.isSuccess()) {
+            Text(
+                "Model: ${screening.modelVersion}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            screening.skinToneFitzpatrick?.let { fitz ->
+                val conf = screening.skinToneConfidence?.let { " (${"%.0f".format(it * 100f)}%)" }.orEmpty()
+                Text(
+                    "Autoderm Fitzpatrick estimate: type $fitz$conf",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            screening.predictions().take(5).forEachIndexed { index, prediction ->
+                val confidence = (prediction.confidence * 100f).coerceIn(0f, 100f)
+                Text(
+                    "${index + 1}. ${prediction.name} — ${"%.0f".format(confidence)}%",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                prediction.icd?.let { icd ->
+                    Text(
+                        "ICD: $icd",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            Text(
+                screening.errorMessage ?: "Autoderm screening failed.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AutodermCloudOptIn(
+    enabled: Boolean,
+    apiConfigured: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Autoderm cloud screening", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                if (apiConfigured) {
+                    "Optional: send each saved capture to Autoderm disease inference (image leaves device)."
+                } else {
+                    "Add AUTODERM_API_KEY to local.properties to enable."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(
+            checked = enabled && apiConfigured,
+            onCheckedChange = onEnabledChange,
+            enabled = apiConfigured,
+        )
     }
 }
 
@@ -413,14 +554,29 @@ private fun ScanRow(scan: ScanEntity) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
+            val imageFile = remember(scan.imagePath) { File(scan.imagePath) }
+            if (imageFile.exists()) {
+                CapturedImage(
+                    file = imageFile,
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF121816)),
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
                 Text(formatDate(scan.capturedAtEpochMillis), fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Lux ${scan.baselineLux.toInt()} · Alignment ${(scan.alignmentScore * 100).toInt()}%",
+                    "${scan.capturePoseLabel()} · Lux ${scan.baselineLux.toInt()} · Alignment ${(scan.alignmentScore * 100).toInt()}%",
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    scan.analysisSourceUserLabel(),
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -429,13 +585,156 @@ private fun ScanRow(scan: ScanEntity) {
     }
 }
 
+/**
+ * Lifecycle-aware [TextToSpeech] handle. Returns a `speak(text)` lambda that
+ * de-duplicates consecutive identical prompts so guidance is not repeated every
+ * analysis frame, and releases the engine on disposal (CLAUDE.md rule 6).
+ */
+@Composable
+private fun rememberSpeechAnnouncer(): (String) -> Unit {
+    val context = LocalContext.current
+    val engineState = remember { mutableStateOf<TextToSpeech?>(null) }
+    val ready = remember { mutableStateOf(false) }
+    val lastSpokenAt = remember { mutableLongStateOf(0L) }
+
+    DisposableEffect(Unit) {
+        var engine: TextToSpeech? = null
+        engine = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                engine?.language = Locale.US
+                engine?.setSpeechRate(0.96f)
+                ready.value = true
+            }
+        }
+        engineState.value = engine
+        onDispose {
+            engine?.stop()
+            engine?.shutdown()
+            engineState.value = null
+            ready.value = false
+        }
+    }
+
+    // Don't interrupt an in-progress utterance, and keep a quiet gap after each
+    // one so prompts don't run together / stutter.
+    return remember {
+        { message: String ->
+            val engine = engineState.value
+            if (engine != null && ready.value && message.isNotBlank()) {
+                val now = System.currentTimeMillis()
+                if (!engine.isSpeaking && now - lastSpokenAt.value >= MIN_ANNOUNCE_GAP_MS) {
+                    lastSpokenAt.value = now
+                    engine.speak(message, TextToSpeech.QUEUE_FLUSH, null, "dt-guidance")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberScanTonePlayer(): Pair<() -> Unit, () -> Unit> {
+    val tone = remember { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 75) }
+    DisposableEffect(Unit) {
+        onDispose { tone.release() }
+    }
+    val tick = remember { { tone.startTone(ToneGenerator.TONE_PROP_BEEP, 70); Unit } }
+    val complete = remember { { tone.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 260); Unit } }
+    return tick to complete
+}
+
+private const val MIN_ANNOUNCE_GAP_MS = 1_800L
+
+// Profile auto-capture tuning: the face must first pass near-center (NEUTRAL),
+// then turn past TRIGGER and hold briefly. After MAX_WAIT the trigger relaxes to
+// RELAX so a comfortable (not full) turn still qualifies. Capture NEVER fires on a
+// near-front frame — a profile must be genuinely turned, or we keep prompting.
+private const val PROFILE_YAW_TRIGGER_DEG = 12f
+private const val PROFILE_YAW_RELAX_DEG = 9f
+private const val PROFILE_NEUTRAL_DEG = 6f
+private const val PROFILE_POLL_MS = 150L
+private const val PROFILE_HOLD_MS = 450L
+private const val PROFILE_MAX_WAIT_MS = 2_500L
+private const val PROFILE_POSITIONING_MS = 6_000L
+private const val FRONT_PASS_SECONDS = 3
+private const val FRONT_TOTAL_SECONDS = FRONT_PASS_SECONDS * 2
+private const val SCAN_TRANSITION_SECONDS = 3
+
+/**
+ * Short spoken coaching cue for the current pose/stage, or empty when idle.
+ * Ordered by priority: lighting, then obstruction, then pose, then framing,
+ * so the user hears the single most useful instruction at a time.
+ */
+private fun spokenGuidanceFor(
+    stage: CaptureWorkflowStage,
+    tracking: FaceTrackingState,
+    luxAcceptable: Boolean,
+    firstProfileYawSign: Int,
+): String {
+    if (stage == CaptureWorkflowStage.Setup) return ""
+    if (!tracking.detected) return "Move into the frame so I can see your face."
+
+    if (!luxAcceptable) return "Find brighter, even lighting on your face."
+
+    // Profile stages: only the turn direction matters (face is intentionally turned).
+    // Confirm the turn as soon as it crosses the relaxed angle so the cue flips
+    // promptly from "turn" to "hold".
+    val turnedMagnitude = kotlin.math.abs(tracking.yawDegrees) >= PROFILE_YAW_RELAX_DEG
+    when (stage) {
+        CaptureWorkflowStage.LeftProfilePrompt,
+        CaptureWorkflowStage.LeftProfileCapture,
+        -> return if (!turnedMagnitude) "Turn your face to the right." else "Hold still."
+        CaptureWorkflowStage.RightProfilePrompt,
+        CaptureWorkflowStage.RightProfileCapture,
+        -> {
+            val oppositeSign = firstProfileYawSign == 0 ||
+                (tracking.yawDegrees >= 0f) != (firstProfileYawSign == 1)
+            val turnedRightPose = turnedMagnitude && oppositeSign
+            return if (!turnedRightPose) "Turn your face to the left." else "Hold still."
+        }
+        else -> Unit
+    }
+
+    val leftEye = tracking.leftEyeOpenProbability ?: 1f
+    val rightEye = tracking.rightEyeOpenProbability ?: 1f
+    if (leftEye < 0.45f || rightEye < 0.45f) return "Open your eyes and clear glasses or hair from your face."
+    if (tracking.possibleObstruction) return "Keep hair and headwear away from your face."
+
+    val alignment = tracking.toAlignmentState()
+    if (alignment.distanceDelta < -0.23f) return "Move closer to the camera."
+    if (alignment.distanceDelta > 0.20f) return "Move back a little."
+
+    val center = tracking.faceBounds?.let { (it.left + it.right) / 2f }
+    if (center != null && tracking.viewWidth > 0) {
+        val offset = kotlin.math.abs(center / tracking.viewWidth - 0.5f)
+        if (offset > 0.18f) return "Center your face in the frame."
+    }
+
+    if (kotlin.math.abs(tracking.yawDegrees) > 10f) return "Face the camera straight on."
+    if (kotlin.math.abs(tracking.rollDegrees) > 8f) return "Keep your head level."
+
+    return "Looks good. Hold still."
+}
+
 @Composable
 private fun CaptureScreen(
     baselineLux: Float,
+    autodermCloudEnabled: Boolean,
+    autodermApiConfigured: Boolean,
+    onAutodermCloudEnabledChange: (Boolean) -> Unit,
     onCreateImageFile: () -> File,
-    onRecord: (Float, AlignmentState, File, () -> Unit, (Throwable) -> Unit) -> Unit,
+    onRecord: (
+        Float,
+        AlignmentState,
+        File,
+        FitzpatrickGroup,
+        CapturePose,
+        () -> Unit,
+        (Throwable) -> Unit,
+    ) -> Unit,
+    onSessionComplete: () -> Unit,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var hasCameraPermission by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
@@ -447,63 +746,170 @@ private fun CaptureScreen(
     var faceTracking by remember { mutableStateOf(FaceTrackingState()) }
     val alignment = faceTracking.toAlignmentState()
     val luxGate = LuxGate(baselineLux = baselineLux, currentLux = lux)
-    val imageCapture = remember {
-        ImageCapture.Builder()
-            .setResolutionSelector(CameraStreamResolutionSelector)
-            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-            .build()
+    val cameraController = remember(context) {
+        LifecycleCameraController(context).apply {
+            cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+            setEnabledUseCases(CameraController.IMAGE_CAPTURE or CameraController.IMAGE_ANALYSIS)
+            previewResolutionSelector = CameraStreamResolutionSelector
+            imageCaptureResolutionSelector = CameraStreamResolutionSelector
+            imageAnalysisResolutionSelector = CameraStreamResolutionSelector
+        }
     }
-    val imageAnalysis = remember {
-        ImageAnalysis.Builder()
-            .setResolutionSelector(CameraStreamResolutionSelector)
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
+    val previewView = remember(context) {
+        PreviewView(context).apply {
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            controller = cameraController
+        }
     }
+    val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     var captureInProgress by remember { mutableStateOf(false) }
     var captureStatus by remember { mutableStateOf<String?>(null) }
+    var saveTriggered by remember { mutableStateOf(false) }
     var workflowStage by remember { mutableStateOf(CaptureWorkflowStage.Setup) }
     var stageSecondsRemaining by remember { mutableIntStateOf(0) }
+    // Sign of the yaw captured for the first (left) profile; the second (right)
+    // profile must be the opposite direction. Sign-agnostic so it works whatever
+    // the front-camera yaw convention is.
+    var firstProfileYawSign by remember { mutableIntStateOf(0) }
+    // Frames captured this session, held for review before any analysis/DB write.
+    val pendingCaptures = remember { mutableStateListOf<PendingCapture>() }
+    var reviewMode by remember { mutableStateOf(false) }
+    var confirming by remember { mutableStateOf(false) }
+    val faceMlKitAnalyzer = remember {
+        FaceMlKitAnalyzer(
+            previewViewProvider = { previewView },
+            stage = { workflowStage },
+            onFaceTracking = { faceTracking = it },
+            resultExecutor = mainExecutor,
+        )
+    }
     val latestFaceTracking by rememberUpdatedState(faceTracking)
-    val currentScanDirection = when (workflowStage) {
-        CaptureWorkflowStage.FrontTopDown,
-        CaptureWorkflowStage.LeftTopDown,
-        CaptureWorkflowStage.RightTopDown,
-        -> ScanDirection.TopDown
-        CaptureWorkflowStage.FrontLeftRight -> ScanDirection.LeftRight
-        else -> ScanDirection.None
+    val latestLux by rememberUpdatedState(lux)
+    val announce = rememberSpeechAnnouncer()
+    val scope = rememberCoroutineScope()
+    val (playTick, playCompleteBeep) = rememberScanTonePlayer()
+    var lastTickSecond by remember { mutableIntStateOf(-1) }
+
+    val spokenCue = if (saveTriggered) {
+        ""
+    } else {
+        spokenGuidanceFor(
+            stage = workflowStage,
+            tracking = faceTracking,
+            luxAcceptable = luxGate.isAcceptable,
+            firstProfileYawSign = firstProfileYawSign,
+        )
+    }
+    val latestSpokenCue by rememberUpdatedState(spokenCue)
+    LaunchedEffect(Unit) {
+        var lastCue = ""
+        while (true) {
+            val cue = latestSpokenCue
+            when {
+                cue.isBlank() -> lastCue = ""
+                cue != lastCue -> {
+                    announce(cue)
+                    lastCue = cue
+                }
+            }
+            delay(1_500)
+        }
+    }
+    LaunchedEffect(captureStatus) {
+        when (captureStatus) {
+            "All scans saved" -> announce("All scans complete.")
+            "Review your captures, then confirm." ->
+                announce("All poses captured. Review your photos, then confirm or retake.")
+            "Scan failed", "Capture failed" -> announce("Scan failed. Please try again.")
+        }
+    }
+    LaunchedEffect(workflowStage) {
+        lastTickSecond = -1
+    }
+    LaunchedEffect(workflowStage, stageSecondsRemaining) {
+        val timedStage = when (workflowStage) {
+            CaptureWorkflowStage.FrontVertical,
+            CaptureWorkflowStage.FrontHorizontal,
+            CaptureWorkflowStage.LeftProfilePrompt,
+            CaptureWorkflowStage.RightProfilePrompt,
+            -> true
+            else -> false
+        }
+        if (timedStage && stageSecondsRemaining > 0 && stageSecondsRemaining != lastTickSecond) {
+            lastTickSecond = stageSecondsRemaining
+            playTick()
+        }
     }
 
-    fun finishCapture() {
-        captureStatus = "Saving final scan..."
+    fun captureReadiness(): Pair<Boolean, String> {
+        val gate = LuxGate(baselineLux = baselineLux, currentLux = latestLux)
+        val captureAlignment = latestFaceTracking.toAlignmentState()
+        return when {
+            !latestFaceTracking.detected ->
+                false to "Position your face inside the guide."
+            !gate.isAcceptable ->
+                false to "Match your Day 0 light (within 20% of baseline lux)."
+            latestFaceTracking.possibleObstruction ->
+                false to "Remove glasses/headwear and keep hair away from the face."
+            !latestFaceTracking.isStraightEnough ->
+                false to "Face the camera straight with head level."
+            captureAlignment.distanceDelta < -0.23f ->
+                false to "Move a little closer to the camera."
+            captureAlignment.distanceDelta > 0.20f ->
+                false to "Ease back slightly from the camera."
+            !captureAlignment.isReasonable ->
+                false to "Center your face in the guide and hold steady."
+            else -> true to ""
+        }
+    }
+
+    fun finishCapture(
+        pose: CapturePose,
+        force: Boolean = false,
+        onSaved: () -> Unit,
+    ) {
+        if (saveTriggered) return
+        if (!force) {
+            val (ready, reason) = captureReadiness()
+            if (!ready) {
+                captureStatus = reason
+                return
+            }
+        }
+
+        saveTriggered = true
+        captureStatus = "Saving ${pose.spokenLabel} frame…"
         val imageFile = onCreateImageFile()
+        val captureAlignment = latestFaceTracking.toAlignmentState()
+        val captureFitzpatrick = latestFaceTracking.skinToneCategory
         val outputOptions = ImageCapture.OutputFileOptions.Builder(imageFile).build()
-        imageCapture.takePicture(
+        cameraController.takePicture(
             outputOptions,
-            ContextCompat.getMainExecutor(context),
+            mainExecutor,
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    captureStatus = "Analyzing multi-pose scan..."
-                    onRecord(
-                        lux,
-                        alignment,
-                        imageFile,
-                        {
-                            captureInProgress = false
-                            workflowStage = CaptureWorkflowStage.Setup
-                            captureStatus = "Scan saved"
-                        },
-                        {
-                            captureInProgress = false
-                            workflowStage = CaptureWorkflowStage.Setup
-                            captureStatus = "Scan failed"
-                            Log.w("DermaTrackCamera", "Unable to record scan", it)
-                        },
+                    // Image is persisted to private storage now; analysis/DB write
+                    // is deferred until the user confirms the captures in review.
+                    pendingCaptures.add(
+                        PendingCapture(
+                            pose = pose,
+                            file = imageFile,
+                            alignment = captureAlignment,
+                            lux = latestLux,
+                            fitzpatrick = captureFitzpatrick,
+                        ),
                     )
+                    playCompleteBeep()
+                    captureStatus = "${pose.shortLabel} captured."
+                    saveTriggered = false
+                    onSaved()
                 }
 
                 override fun onError(exception: ImageCaptureException) {
                     captureInProgress = false
+                    saveTriggered = false
                     workflowStage = CaptureWorkflowStage.Setup
                     imageFile.delete()
                     captureStatus = "Capture failed"
@@ -513,17 +919,101 @@ private fun CaptureScreen(
         )
     }
 
+    fun confirmCaptures() {
+        if (confirming) return
+        val items = pendingCaptures.toList()
+        if (items.isEmpty()) {
+            reviewMode = false
+            return
+        }
+        confirming = true
+        captureStatus = "Analyzing ${items.size} captures…"
+        var settled = 0
+        val finishIfDone = {
+            settled += 1
+            if (settled == items.size) {
+                pendingCaptures.clear()
+                confirming = false
+                reviewMode = false
+                captureStatus = "All scans saved"
+                onSessionComplete()
+            }
+        }
+        items.forEach { capture ->
+            onRecord(
+                capture.lux,
+                capture.alignment,
+                capture.file,
+                capture.fitzpatrick,
+                capture.pose,
+                { finishIfDone() },
+                {
+                    Log.w("DermaTrackCamera", "Unable to record ${capture.pose} scan", it)
+                    finishIfDone()
+                },
+            )
+        }
+    }
+
+    fun retakeCaptures() {
+        if (confirming) return
+        pendingCaptures.forEach { it.file.delete() }
+        pendingCaptures.clear()
+        reviewMode = false
+        captureInProgress = false
+        workflowStage = CaptureWorkflowStage.Setup
+        captureStatus = "Let's recapture. Tap Start Guided Scan."
+    }
+
+    fun transitionTo(nextStage: CaptureWorkflowStage, status: String) {
+        scope.launch {
+            stageSecondsRemaining = SCAN_TRANSITION_SECONDS
+            repeat(SCAN_TRANSITION_SECONDS) {
+                captureStatus = "$status in ${stageSecondsRemaining}s"
+                delay(1_000)
+                stageSecondsRemaining -= 1
+            }
+            stageSecondsRemaining = 0
+            workflowStage = nextStage
+        }
+    }
+
+    val currentScanDirection = when (workflowStage) {
+        CaptureWorkflowStage.FrontVertical,
+        CaptureWorkflowStage.LeftProfileCapture,
+        CaptureWorkflowStage.RightProfileCapture,
+        -> ScanDirection.TopDown
+        CaptureWorkflowStage.FrontHorizontal,
+        CaptureWorkflowStage.FrontCapture,
+        -> ScanDirection.LeftRight
+        else -> ScanDirection.None
+    }
+    val isSweeping = captureInProgress && when (workflowStage) {
+        CaptureWorkflowStage.FrontVertical,
+        CaptureWorkflowStage.FrontHorizontal,
+        CaptureWorkflowStage.FrontCapture,
+        CaptureWorkflowStage.LeftProfileCapture,
+        CaptureWorkflowStage.RightProfileCapture,
+        -> true
+        else -> false
+    }
+
     LaunchedEffect(Unit) {
         lightMeter.observeLux().collect { if (it > 0f) lux = it }
     }
 
-    DisposableEffect(imageAnalysis, analysisExecutor) {
-        val analyzer = FaceDetectionFrameAnalyzer(stage = { workflowStage }) { faceTracking = it }
-        imageAnalysis.setAnalyzer(analysisExecutor, analyzer)
-        onDispose {
-            imageAnalysis.clearAnalyzer()
-            analyzer.close()  // release ML Kit native FaceDetector — CameraX rebinds otherwise leak it
-            analysisExecutor.shutdown()
+    DisposableEffect(hasCameraPermission, lifecycleOwner) {
+        if (!hasCameraPermission) {
+            onDispose { }
+        } else {
+            cameraController.bindToLifecycle(lifecycleOwner)
+            cameraController.setImageAnalysisAnalyzer(analysisExecutor, faceMlKitAnalyzer.analyzer)
+            onDispose {
+                cameraController.clearImageAnalysisAnalyzer()
+                cameraController.unbind()
+                faceMlKitAnalyzer.close()
+                analysisExecutor.shutdown()
+            }
         }
     }
 
@@ -539,200 +1029,456 @@ private fun CaptureScreen(
                             delay(1_000)
                             stageSecondsRemaining -= 1
                         }
-                        workflowStage = CaptureWorkflowStage.FrontTopDown
+                        workflowStage = CaptureWorkflowStage.FrontVertical
                     } else {
                         delay(350)
                     }
                 }
             }
-            CaptureWorkflowStage.FrontTopDown -> {
-                captureStatus = "Front scan: top-to-bottom pass. Hold still and look straight."
-                stageSecondsRemaining = 15
-                repeat(15) {
+            CaptureWorkflowStage.FrontVertical -> {
+                captureStatus = "Front pass 1 of 2: top-to-bottom sweep. Hold still and look straight."
+                stageSecondsRemaining = FRONT_PASS_SECONDS
+                repeat(FRONT_PASS_SECONDS) {
                     delay(1_000)
                     stageSecondsRemaining -= 1
                 }
-                workflowStage = CaptureWorkflowStage.FrontLeftRight
+                workflowStage = CaptureWorkflowStage.FrontHorizontal
             }
-            CaptureWorkflowStage.FrontLeftRight -> {
-                captureStatus = "Front scan: left-to-right pass. Keep light even across the face."
-                stageSecondsRemaining = 15
-                repeat(15) {
+            CaptureWorkflowStage.FrontHorizontal -> {
+                captureStatus = "Front pass 2 of 2: left-to-right sweep. Keep light even across the face."
+                stageSecondsRemaining = FRONT_PASS_SECONDS
+                repeat(FRONT_PASS_SECONDS) {
                     delay(1_000)
                     stageSecondsRemaining -= 1
                 }
-                workflowStage = CaptureWorkflowStage.TurnLeftPrompt
-                captureStatus = "Turn your face left and hold. Capture starts after 3 stable seconds."
+                workflowStage = CaptureWorkflowStage.FrontCapture
+                captureStatus = "Hold still — saving the front frame when pose and light are ready."
             }
-            CaptureWorkflowStage.LeftTopDown -> {
-                captureStatus = "Left profile scan: hold the pose."
-                stageSecondsRemaining = 12
-                repeat(12) {
-                    delay(1_000)
-                    stageSecondsRemaining -= 1
+            CaptureWorkflowStage.FrontCapture -> {
+                var waitedMs = 0L
+                val maxWaitMs = FRONT_TOTAL_SECONDS * 1_000L
+                while (workflowStage == CaptureWorkflowStage.FrontCapture) {
+                    val (ready, reason) = captureReadiness()
+                    val timedOut = waitedMs >= maxWaitMs
+                    val canBestEffort = timedOut &&
+                        latestFaceTracking.detected &&
+                        !latestFaceTracking.possibleObstruction &&
+                        LuxGate(baselineLux = baselineLux, currentLux = latestLux).isAcceptable
+                    if (ready || canBestEffort) {
+                        finishCapture(pose = CapturePose.Front, force = canBestEffort && !ready) {
+                            announce("Front captured.")
+                            transitionTo(
+                                nextStage = CaptureWorkflowStage.LeftProfilePrompt,
+                                status = "Left profile starts",
+                            )
+                        }
+                        break
+                    }
+                    captureStatus = reason
+                    stageSecondsRemaining =
+                        (((maxWaitMs - waitedMs) + 999L) / 1000L).toInt().coerceAtLeast(0)
+                    delay(350)
+                    waitedMs += 350
                 }
-                workflowStage = CaptureWorkflowStage.TurnRightPrompt
-                captureStatus = "Turn your face right and hold. Capture starts after 3 stable seconds."
             }
-            CaptureWorkflowStage.RightTopDown -> {
-                captureStatus = "Right profile scan: hold the pose."
-                stageSecondsRemaining = 12
-                repeat(12) {
-                    delay(1_000)
-                    stageSecondsRemaining -= 1
-                }
-                workflowStage = CaptureWorkflowStage.Finalizing
-            }
-            CaptureWorkflowStage.Finalizing -> finishCapture()
-            CaptureWorkflowStage.TurnLeftPrompt,
-            CaptureWorkflowStage.TurnRightPrompt,
-            -> {
-                val leftPose = workflowStage == CaptureWorkflowStage.TurnLeftPrompt
-                captureStatus = if (leftPose) {
-                    "Turn your face left and hold. Capture starts after 3 stable seconds."
-                } else {
-                    "Turn your face right and hold. Capture starts after 3 stable seconds."
-                }
-                var stableSeconds = 0
-                while (
-                    workflowStage == CaptureWorkflowStage.TurnLeftPrompt ||
-                    workflowStage == CaptureWorkflowStage.TurnRightPrompt
-                ) {
-                    val stable = if (leftPose) latestFaceTracking.isLeftPose else latestFaceTracking.isRightPose
-                    if (stable) {
-                        stableSeconds += 1
-                        stageSecondsRemaining = 3 - stableSeconds
+            CaptureWorkflowStage.LeftProfilePrompt -> {
+                // Left profile = user turns their face to the right (first profile turn).
+                captureStatus = "Left profile: slowly turn your face to the right and hold."
+                var stableMs = 0L
+                var waitedMs = 0L
+                var sawNeutral = false
+                while (workflowStage == CaptureWorkflowStage.LeftProfilePrompt) {
+                    val yaw = latestFaceTracking.yawDegrees
+                    val luxOk = LuxGate(baselineLux = baselineLux, currentLux = latestLux).isAcceptable
+                    if (!sawNeutral && latestFaceTracking.detected &&
+                        kotlin.math.abs(yaw) < PROFILE_NEUTRAL_DEG
+                    ) {
+                        sawNeutral = true
+                    }
+                    val trigger = if (waitedMs >= PROFILE_MAX_WAIT_MS) {
+                        PROFILE_YAW_RELAX_DEG
                     } else {
-                        stableSeconds = 0
+                        PROFILE_YAW_TRIGGER_DEG
+                    }
+                    val turned = sawNeutral && latestFaceTracking.detected &&
+                        kotlin.math.abs(yaw) >= trigger
+                    Log.d(
+                        "DermaTrackProfile",
+                        "left yaw=$yaw detected=${latestFaceTracking.detected} neutral=$sawNeutral " +
+                            "trigger=$trigger turned=$turned lux=$luxOk stable=$stableMs",
+                    )
+                    if (turned && luxOk) stableMs += PROFILE_POLL_MS else stableMs = 0L
+                    val held = stableMs >= PROFILE_HOLD_MS
+                    val positioningDone = waitedMs >= PROFILE_POSITIONING_MS
+                    if (held && positioningDone) {
+                        firstProfileYawSign = if (yaw >= 0f) 1 else -1
                         stageSecondsRemaining = 0
+                        workflowStage = CaptureWorkflowStage.LeftProfileCapture
+                        break
                     }
-                    if (stableSeconds >= 3) {
-                        workflowStage = if (leftPose) CaptureWorkflowStage.LeftTopDown else CaptureWorkflowStage.RightTopDown
+                    if (!positioningDone) {
+                        captureStatus = "Left profile: keep positioning... ${((PROFILE_POSITIONING_MS - waitedMs + 999L) / 1000L).toInt()}s"
+                    } else if (turned) {
+                        captureStatus = "Hold the left profile…"
+                    } else if (sawNeutral) {
+                        captureStatus = "Turn your face to the right and hold."
+                    } else {
+                        captureStatus = "Face the camera for a moment, then turn right."
                     }
-                    delay(1_000)
+                    val holdRemaining = if (stableMs > 0L) {
+                        (((PROFILE_HOLD_MS - stableMs) + 999L) / 1000L).toInt().coerceAtLeast(0)
+                    } else 0
+                    val positioningRemaining =
+                        (((PROFILE_POSITIONING_MS - waitedMs) + 999L) / 1000L).toInt().coerceAtLeast(0)
+                    stageSecondsRemaining = maxOf(holdRemaining, positioningRemaining)
+                    delay(PROFILE_POLL_MS)
+                    waitedMs += PROFILE_POLL_MS
+                }
+            }
+            CaptureWorkflowStage.LeftProfileCapture -> {
+                captureStatus = "Hold the left profile still — capturing."
+                finishCapture(pose = CapturePose.LeftProfile, force = true) {
+                    announce("Left profile captured.")
+                    transitionTo(
+                        nextStage = CaptureWorkflowStage.RightProfilePrompt,
+                        status = "Right profile starts",
+                    )
+                    scope.launch {
+                        delay((SCAN_TRANSITION_SECONDS * 1_000L) + 250L)
+                        announce("Turn your face to the left.")
+                    }
+                }
+            }
+            CaptureWorkflowStage.RightProfilePrompt -> {
+                // Right profile = user turns their face to the left: must first return
+                // near-center, then turn the OPPOSITE way from the left profile, so the
+                // residual left-profile turn can't immediately re-trigger a capture.
+                captureStatus = "Right profile: turn your face to the left and hold."
+                var stableMs = 0L
+                var waitedMs = 0L
+                while (workflowStage == CaptureWorkflowStage.RightProfilePrompt) {
+                    val yaw = latestFaceTracking.yawDegrees
+                    val luxOk = LuxGate(baselineLux = baselineLux, currentLux = latestLux).isAcceptable
+                    // The opposite-direction check (vs. the left profile's turn) already
+                    // rejects residual left-profile yaw, so no return-to-center is needed.
+                    val oppositeSign = firstProfileYawSign == 0 ||
+                        (yaw >= 0f) != (firstProfileYawSign == 1)
+                    val trigger = if (waitedMs >= PROFILE_MAX_WAIT_MS) {
+                        PROFILE_YAW_RELAX_DEG
+                    } else {
+                        PROFILE_YAW_TRIGGER_DEG
+                    }
+                    val turned = latestFaceTracking.detected &&
+                        kotlin.math.abs(yaw) >= trigger &&
+                        oppositeSign
+                    Log.d(
+                        "DermaTrackProfile",
+                        "right yaw=$yaw detected=${latestFaceTracking.detected} " +
+                            "opp=$oppositeSign trigger=$trigger turned=$turned lux=$luxOk stable=$stableMs",
+                    )
+                    if (turned && luxOk) stableMs += PROFILE_POLL_MS else stableMs = 0L
+                    val held = stableMs >= PROFILE_HOLD_MS
+                    val positioningDone = waitedMs >= PROFILE_POSITIONING_MS
+                    if (held && positioningDone) {
+                        stageSecondsRemaining = 0
+                        workflowStage = CaptureWorkflowStage.RightProfileCapture
+                        break
+                    }
+                    captureStatus = if (!positioningDone) {
+                        "Right profile: keep positioning... ${((PROFILE_POSITIONING_MS - waitedMs + 999L) / 1000L).toInt()}s"
+                    } else if (turned) {
+                        "Hold the right profile…"
+                    } else {
+                        "Turn your face to the left and hold."
+                    }
+                    val holdRemaining = if (stableMs > 0L) {
+                        (((PROFILE_HOLD_MS - stableMs) + 999L) / 1000L).toInt().coerceAtLeast(0)
+                    } else 0
+                    val positioningRemaining =
+                        (((PROFILE_POSITIONING_MS - waitedMs) + 999L) / 1000L).toInt().coerceAtLeast(0)
+                    stageSecondsRemaining = maxOf(holdRemaining, positioningRemaining)
+                    delay(PROFILE_POLL_MS)
+                    waitedMs += PROFILE_POLL_MS
+                }
+            }
+            CaptureWorkflowStage.RightProfileCapture -> {
+                captureStatus = "Hold the right profile still — capturing."
+                finishCapture(pose = CapturePose.RightProfile, force = true) {
+                    announce("Right profile captured.")
+                    captureInProgress = false
+                    workflowStage = CaptureWorkflowStage.Setup
+                    reviewMode = true
+                    captureStatus = "Review your captures, then confirm."
                 }
             }
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(360.dp)
-                .background(Color(0xFF121816), RoundedCornerShape(8.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            CameraPreview(
-                hasCameraPermission = hasCameraPermission,
-                imageCapture = imageCapture,
-                imageAnalysis = imageAnalysis,
-            )
-            FaceMeshOverlay(
-                faceTracking = faceTracking,
-                scanDirection = currentScanDirection,
-                isScanning = captureInProgress && workflowStage != CaptureWorkflowStage.MeshLock,
-            )
-        }
-        CaptureInstructionPanel(
-            stage = workflowStage,
-            faceTracking = faceTracking,
-            secondsRemaining = stageSecondsRemaining,
-            status = captureStatus,
+    val scrollState = rememberScrollState()
+
+    if (reviewMode) {
+        CaptureReviewSection(
+            captures = pendingCaptures.toList(),
+            confirming = confirming,
+            onConfirm = { confirmCaptures() },
+            onRetake = { retakeCaptures() },
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(onClick = { launcher.launch(Manifest.permission.CAMERA) }) {
-                Icon(Icons.Default.CameraAlt, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text(if (hasCameraPermission) "Camera Ready" else "Grant Camera")
-            }
-            Button(
-                onClick = {
-                    when (workflowStage) {
-                        CaptureWorkflowStage.Setup -> {
-                            captureInProgress = true
-                            workflowStage = CaptureWorkflowStage.MeshLock
-                        }
-                        CaptureWorkflowStage.TurnLeftPrompt -> workflowStage = CaptureWorkflowStage.LeftTopDown
-                        CaptureWorkflowStage.TurnRightPrompt -> workflowStage = CaptureWorkflowStage.RightTopDown
-                        else -> Unit
-                    }
-                },
-                enabled = hasCameraPermission && luxGate.isAcceptable && when (workflowStage) {
-                    CaptureWorkflowStage.Setup -> true
-                    else -> false
-                },
+        return
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(start = 16.dp, top = 16.dp, end = 48.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(360.dp)
+                    .background(Color(0xFF121816), RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    when (workflowStage) {
-                        CaptureWorkflowStage.Setup -> "Start Guided Scan"
-                        CaptureWorkflowStage.TurnLeftPrompt -> "Hold Left Pose"
-                        CaptureWorkflowStage.TurnRightPrompt -> "Hold Right Pose"
-                        CaptureWorkflowStage.Finalizing -> "Saving..."
-                        else -> "Scanning..."
-                    },
+                CaptureCameraViewport(
+                    hasCameraPermission = hasCameraPermission,
+                    previewView = previewView,
+                )
+                FaceMeshOverlay(
+                    faceTracking = faceTracking,
+                    scanDirection = currentScanDirection,
+                    isScanning = isSweeping,
                 )
             }
+            CaptureInstructionPanel(
+                stage = workflowStage,
+                faceTracking = faceTracking,
+                secondsRemaining = stageSecondsRemaining,
+                status = captureStatus,
+            )
+            Text(
+                text = "Tone thresholds use Fitzpatrick V defaults until auto-detection ships. A full session saves three scans: front, left profile, and right profile.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            AutodermCloudOptIn(
+                enabled = autodermCloudEnabled,
+                apiConfigured = autodermApiConfigured,
+                onEnabledChange = onAutodermCloudEnabledChange,
+            )
+            val isFrontStage = workflowStage == CaptureWorkflowStage.MeshLock ||
+                workflowStage == CaptureWorkflowStage.FrontVertical ||
+                workflowStage == CaptureWorkflowStage.FrontHorizontal ||
+                workflowStage == CaptureWorkflowStage.FrontCapture
+            val isProfileStage = workflowStage == CaptureWorkflowStage.LeftProfilePrompt ||
+                workflowStage == CaptureWorkflowStage.LeftProfileCapture ||
+                workflowStage == CaptureWorkflowStage.RightProfilePrompt ||
+                workflowStage == CaptureWorkflowStage.RightProfileCapture
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { launcher.launch(Manifest.permission.CAMERA) }) {
+                    Icon(Icons.Default.CameraAlt, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (hasCameraPermission) "Camera Ready" else "Grant Camera")
+                }
+                Button(
+                    onClick = {
+                        when (workflowStage) {
+                            CaptureWorkflowStage.Setup -> {
+                                captureInProgress = true
+                                saveTriggered = false
+                                firstProfileYawSign = 0
+                                workflowStage = CaptureWorkflowStage.MeshLock
+                            }
+                            // Manual override: the user decides the front frame is good and
+                            // captures immediately, bypassing the auto-capture wait/timeout.
+                            // Profile poses auto-capture (screen not visible when turned).
+                            CaptureWorkflowStage.MeshLock,
+                            CaptureWorkflowStage.FrontVertical,
+                            CaptureWorkflowStage.FrontHorizontal,
+                            CaptureWorkflowStage.FrontCapture,
+                            -> finishCapture(pose = CapturePose.Front, force = true) {
+                                announce("Front captured.")
+                                transitionTo(
+                                    nextStage = CaptureWorkflowStage.LeftProfilePrompt,
+                                    status = "Left profile starts",
+                                )
+                            }
+                            else -> Unit
+                        }
+                    },
+                    enabled = hasCameraPermission && when (workflowStage) {
+                        CaptureWorkflowStage.Setup -> luxGate.isAcceptable
+                        else -> isFrontStage &&
+                            !saveTriggered &&
+                            faceTracking.detected &&
+                            luxGate.isAcceptable
+                    },
+                ) {
+                    Text(
+                        when {
+                            workflowStage == CaptureWorkflowStage.Setup -> "Start Guided Scan"
+                            saveTriggered -> "Saving…"
+                            isProfileStage -> "Auto-capturing…"
+                            isFrontStage -> "Capture Front"
+                            else -> "Scanning…"
+                        },
+                    )
+                }
+            }
+            if (isFrontStage) {
+                Text(
+                    text = "Front capture runs automatically when your pose is steady — or tap Capture Front once it looks good. Then you'll be guided through left and right profiles (those auto-capture since the screen isn't visible when you turn).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (isProfileStage) {
+                Text(
+                    text = "Profile capture is automatic — follow the spoken prompt to turn, then hold steady.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            CaptureGatePanel(luxGate = luxGate, alignment = alignment)
         }
-        CaptureGatePanel(luxGate = luxGate, alignment = alignment)
+        CaptureScrollButtons(
+            scrollState = scrollState,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 8.dp),
+        )
     }
 }
 
 @Composable
-private fun CameraPreview(
-    hasCameraPermission: Boolean,
-    imageCapture: ImageCapture,
-    imageAnalysis: ImageAnalysis,
+private fun CaptureReviewSection(
+    captures: List<PendingCapture>,
+    confirming: Boolean,
+    onConfirm: () -> Unit,
+    onRetake: () -> Unit,
 ) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val previewView = remember(context) {
-        PreviewView(context).apply {
-            scaleType = PreviewView.ScaleType.FILL_CENTER
-        }
-    }
-
-    DisposableEffect(hasCameraPermission, context, lifecycleOwner, imageCapture, imageAnalysis, previewView) {
-        if (!hasCameraPermission) {
-            onDispose { }
-        } else {
-            val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-            val listener = Runnable {
-                val cameraProvider = cameraProviderFuture.get()
-                val preview = Preview.Builder()
-                    .setResolutionSelector(CameraStreamResolutionSelector)
-                    .build()
-                    .also {
-                        it.setSurfaceProvider(previewView.surfaceProvider)
-                    }
-                runCatching {
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner,
-                        CameraSelector.DEFAULT_FRONT_CAMERA,
-                        preview,
-                        imageAnalysis,
-                        imageCapture,
+    val scrollState = rememberScrollState()
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(start = 16.dp, top = 16.dp, end = 48.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                text = "Review your captures",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "Check that each pose is framed and in focus. Confirm to analyze and save them, or retake the whole session.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            captures.forEach { capture ->
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = capture.pose.shortLabel,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium,
                     )
-                }.onFailure { Log.w("DermaTrackCamera", "Unable to bind preview", it) }
-            }
-            cameraProviderFuture.addListener(listener, ContextCompat.getMainExecutor(context))
-            onDispose {
-                runCatching {
-                    if (cameraProviderFuture.isDone) {
-                        cameraProviderFuture.get().unbindAll()
-                    }
+                    CapturedImage(
+                        file = capture.file,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(3f / 4f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF121816)),
+                    )
                 }
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = onRetake, enabled = !confirming) {
+                    Text("Retake all")
+                }
+                Button(onClick = onConfirm, enabled = !confirming) {
+                    Text(if (confirming) "Analyzing…" else "Looks good — Analyze")
+                }
+            }
+            Text(
+                text = "Images are stored only in this app's private storage and attached to your scan history.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        CaptureScrollButtons(
+            scrollState = scrollState,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 8.dp),
+        )
+    }
+}
+
+@Composable
+private fun CapturedImage(
+    file: File,
+    modifier: Modifier = Modifier,
+) {
+    val path = file.absolutePath
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, path) {
+        value = withContext(Dispatchers.IO) { loadScaledBitmap(path, maxDimension = 1024) }
+    }
+    val image = bitmap
+    if (image != null) {
+        Image(
+            bitmap = image,
+            contentDescription = null,
+            modifier = modifier,
+            contentScale = ContentScale.Crop,
+        )
+    } else {
+        Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            Text(
+                text = "Loading…",
+                color = Color.White.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
+}
 
+/** Decode a downscaled, EXIF-rotated bitmap from a private capture file for display. */
+private fun loadScaledBitmap(path: String, maxDimension: Int): ImageBitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    val largest = maxOf(bounds.outWidth, bounds.outHeight)
+    while (largest / sample > maxDimension) sample *= 2
+    val decoded = BitmapFactory.decodeFile(
+        path,
+        BitmapFactory.Options().apply { inSampleSize = sample },
+    ) ?: return null
+    val rotation = runCatching {
+        when (ExifInterface(path).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+    }.getOrDefault(0f)
+    val oriented = if (rotation != 0f) {
+        val matrix = Matrix().apply { postRotate(rotation) }
+        Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+    } else {
+        decoded
+    }
+    return oriented.asImageBitmap()
+}
+
+@Composable
+private fun CaptureCameraViewport(
+    hasCameraPermission: Boolean,
+    previewView: PreviewView,
+) {
     if (!hasCameraPermission) {
         Text(
             text = "Camera permission required",
@@ -749,17 +1495,61 @@ private fun CameraPreview(
 }
 
 @Composable
+private fun CaptureScrollButtons(
+    scrollState: ScrollState,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilledIconButton(
+            onClick = {
+                scope.launch {
+                    scrollState.animateScrollBy(-240f)
+                }
+            },
+            enabled = scrollState.value > 0,
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+        ) {
+            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Scroll up")
+        }
+        FilledIconButton(
+            onClick = {
+                scope.launch {
+                    scrollState.animateScrollBy(240f)
+                }
+            },
+            enabled = scrollState.value < scrollState.maxValue,
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+        ) {
+            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Scroll down")
+        }
+    }
+}
+
+@Composable
 private fun CaptureInstructionPanel(
     stage: CaptureWorkflowStage,
     faceTracking: FaceTrackingState,
     secondsRemaining: Int,
     status: String?,
 ) {
-    Card(
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(8.dp),
+            )
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stage.title(), style = MaterialTheme.typography.titleMedium)
             Text(
                 text = status ?: stage.defaultInstruction(),
@@ -801,32 +1591,31 @@ private fun CaptureInstructionPanel(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        }
     }
 }
 
 private fun CaptureWorkflowStage.title(): String = when (this) {
     CaptureWorkflowStage.Setup -> "Guided Face Scan"
     CaptureWorkflowStage.MeshLock -> "Face Mesh Lock"
-    CaptureWorkflowStage.FrontTopDown -> "Front Surface Pass"
-    CaptureWorkflowStage.FrontLeftRight -> "Front Cross Pass"
-    CaptureWorkflowStage.TurnLeftPrompt -> "Left Profile Setup"
-    CaptureWorkflowStage.LeftTopDown -> "Left Profile Pass"
-    CaptureWorkflowStage.TurnRightPrompt -> "Right Profile Setup"
-    CaptureWorkflowStage.RightTopDown -> "Right Profile Pass"
-    CaptureWorkflowStage.Finalizing -> "Finalizing Scan"
+    CaptureWorkflowStage.FrontVertical -> "Front Pass 1 · Vertical"
+    CaptureWorkflowStage.FrontHorizontal -> "Front Pass 2 · Horizontal"
+    CaptureWorkflowStage.FrontCapture -> "Front Capture"
+    CaptureWorkflowStage.LeftProfilePrompt -> "Left Profile · Turn Right"
+    CaptureWorkflowStage.LeftProfileCapture -> "Left Profile Capture"
+    CaptureWorkflowStage.RightProfilePrompt -> "Right Profile · Turn Left"
+    CaptureWorkflowStage.RightProfileCapture -> "Right Profile Capture"
 }
 
 private fun CaptureWorkflowStage.defaultInstruction(): String = when (this) {
     CaptureWorkflowStage.Setup -> "Remove glasses/headwear, sit straight, and keep light falling evenly on face skin."
     CaptureWorkflowStage.MeshLock -> "Hold still while the face mesh locks onto your features."
-    CaptureWorkflowStage.FrontTopDown -> "Hold straight. The scanner is moving from forehead to chin."
-    CaptureWorkflowStage.FrontLeftRight -> "Hold straight. The scanner is moving left to right."
-    CaptureWorkflowStage.TurnLeftPrompt -> "Turn your face left until the pose gate unlocks."
-    CaptureWorkflowStage.LeftTopDown -> "Hold the left profile still."
-    CaptureWorkflowStage.TurnRightPrompt -> "Turn your face right until the pose gate unlocks."
-    CaptureWorkflowStage.RightTopDown -> "Hold the right profile still."
-    CaptureWorkflowStage.Finalizing -> "Saving final aligned frame and generating report."
+    CaptureWorkflowStage.FrontVertical -> "Hold straight. The scanner is sweeping from forehead to chin."
+    CaptureWorkflowStage.FrontHorizontal -> "Hold straight. The scanner is sweeping left to right."
+    CaptureWorkflowStage.FrontCapture -> "Saving the front frame when pose and light are ready."
+    CaptureWorkflowStage.LeftProfilePrompt -> "Slowly turn your face to the right and hold for the left profile."
+    CaptureWorkflowStage.LeftProfileCapture -> "Hold the left profile still — capturing."
+    CaptureWorkflowStage.RightProfilePrompt -> "Slowly turn your face to the left and hold for the right profile."
+    CaptureWorkflowStage.RightProfileCapture -> "Hold the right profile still — capturing."
 }
 
 @Composable
@@ -857,12 +1646,18 @@ private fun FaceMeshOverlay(
 
     Canvas(modifier = Modifier.fillMaxSize()) {
         val guideColor = if (faceTracking.detected) Color(0xFF73D6B5) else Color(0xFFE2B05B)
-        val previewTransform = PreviewCropTransform(
-            canvasWidth = size.width,
-            canvasHeight = size.height,
-            sourceAspectRatio = faceTracking.sourceAspectRatio,
-        )
-        val bounds = faceTracking.faceBounds
+        val viewWidth = faceTracking.viewWidth
+        val viewHeight = faceTracking.viewHeight
+        val bounds = faceTracking.faceBounds?.let { viewBounds ->
+            if (viewWidth <= 0 || viewHeight <= 0) null else {
+                RectF(
+                    viewBounds.left / viewWidth,
+                    viewBounds.top / viewHeight,
+                    viewBounds.right / viewWidth,
+                    viewBounds.bottom / viewHeight,
+                )
+            }
+        }
         if (bounds == null) {
             val faceWidth = size.width * 0.58f
             val faceHeight = size.height * 0.66f
@@ -875,15 +1670,27 @@ private fun FaceMeshOverlay(
             return@Canvas
         }
 
-        // Expanded clinical reticle and mesh logic
-        val topLeft = previewTransform.map(bounds.left, bounds.top)
-        val bottomRight = previewTransform.map(bounds.right, bounds.bottom)
-        val left = topLeft.x
-        val top = topLeft.y
-        val right = bottomRight.x
-        val bottom = bottomRight.y
+        val left = bounds.left * size.width
+        val top = bounds.top * size.height
+        val right = bounds.right * size.width
+        val bottom = bounds.bottom * size.height
         val width = (right - left).coerceAtLeast(1f)
         val height = (bottom - top).coerceAtLeast(1f)
+
+        // ML Kit's FACE contour stops at the hairline, so the upper forehead and
+        // scalp fall outside it. Draw a full-head coverage oval that extends above
+        // the detected face box so the guide visibly covers the whole head.
+        val headPadX = width * 0.10f
+        val headExtendUp = height * 0.55f
+        val headLeft = (left - headPadX).coerceAtLeast(0f)
+        val headRight = (right + headPadX).coerceAtMost(size.width)
+        val headTop = (top - headExtendUp).coerceAtLeast(0f)
+        drawOval(
+            color = guideColor.copy(alpha = 0.55f),
+            topLeft = Offset(headLeft, headTop),
+            size = Size(headRight - headLeft, bottom - headTop),
+            style = Stroke(width = 4f),
+        )
 
         // Draw Clinical Reticle (Crosshairs)
         val reticleColor = if (faceTracking.isStraightEnough) Color(0xFF73D6B5) else Color(0xFFE2B05B).copy(alpha = 0.6f)
@@ -893,7 +1700,7 @@ private fun FaceMeshOverlay(
         drawLine(reticleColor, Offset(centerX, centerY - 40f), Offset(centerX, centerY + 40f), strokeWidth = 2f)
         drawCircle(reticleColor, radius = 50f, center = Offset(centerX, centerY), style = Stroke(width = 1.5f))
 
-        val outline = faceTracking.faceOutline.map { previewTransform.map(it.x, it.y) }
+        val outline = faceTracking.faceOutline.map { it.toCanvasOffset(size.width, size.height) }
         if (outline.size >= 4) {
             drawPath(
                 path = outline.toClosedPath(),
@@ -911,7 +1718,7 @@ private fun FaceMeshOverlay(
 
         val gridColor = guideColor.copy(alpha = 0.16f)
         faceTracking.contourLines.forEach { contour ->
-            val points = contour.map { previewTransform.map(it.x, it.y) }
+            val points = contour.map { it.toCanvasOffset(size.width, size.height) }
             if (points.size > 1) {
                 drawPath(
                     path = points.toOpenPath(),
@@ -922,7 +1729,7 @@ private fun FaceMeshOverlay(
         }
 
         faceTracking.meshPoints.forEachIndexed { index, point ->
-            val mapped = previewTransform.map(point.x, point.y)
+            val mapped = point.toCanvasOffset(size.width, size.height)
             val x = mapped.x
             val y = mapped.y
             drawCircle(
@@ -1040,28 +1847,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVerticalSegment
     }
 }
 
-private data class PreviewCropTransform(
-    val canvasWidth: Float,
-    val canvasHeight: Float,
-    val sourceAspectRatio: Float,
-) {
-    private val sourceWidth = sourceAspectRatio.coerceAtLeast(0.01f)
-    private val sourceHeight = 1f
-    private val scale = max(canvasWidth / sourceWidth, canvasHeight / sourceHeight)
-    private val drawnWidth = sourceWidth * scale
-    private val drawnHeight = sourceHeight * scale
-    private val xOffset = (canvasWidth - drawnWidth) / 2f
-    private val yOffset = (canvasHeight - drawnHeight) / 2f
-    private val frontCameraXCalibration = canvasWidth * -0.05f
-    private val frontCameraYCalibration = canvasHeight * -0.15f
-
-    fun map(normalizedX: Float, normalizedY: Float): Offset {
-        return Offset(
-            x = xOffset + frontCameraXCalibration + (normalizedX.coerceIn(0f, 1f) * drawnWidth),
-            y = yOffset + frontCameraYCalibration + (normalizedY.coerceIn(0f, 1f) * drawnHeight),
-        )
-    }
-}
+private fun NormalizedPoint.toCanvasOffset(canvasWidth: Float, canvasHeight: Float): Offset =
+    Offset(x = x * canvasWidth, y = y * canvasHeight)
 
 @Composable
 private fun CaptureGatePanel(luxGate: LuxGate, alignment: AlignmentState) {

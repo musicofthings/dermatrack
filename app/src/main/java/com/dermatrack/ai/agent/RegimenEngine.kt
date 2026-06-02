@@ -1,11 +1,16 @@
 package com.dermatrack.ai.agent
 
-import com.dermatrack.ai.data.model.ProductEntity
+import com.dermatrack.ai.analysis.BiomarkerAnalysisSource
+import com.dermatrack.ai.data.model.resolvedAnalysisSource
 import com.dermatrack.ai.data.model.ScanEntity
+import com.dermatrack.ai.data.model.ProductEntity
 import java.util.concurrent.TimeUnit
 
 class RegimenEngine {
     fun evaluate(scans: List<ScanEntity>, products: List<ProductEntity>): String {
+        if (scans.isEmpty()) {
+            return "Capture a baseline scan under stable light to begin tracking."
+        }
         if (scans.size < 2) {
             return "Baseline captured. Continue the regimen for 21 days before ingredient pivot logic is applied."
         }
@@ -16,9 +21,14 @@ class RegimenEngine {
         val melaninDelta = latest.melaninDistribution - oldest.melaninDistribution
         val currentActives = products.joinToString(" ") { it.activeIngredients }.lowercase()
 
-        return when {
+        val heuristicPrefix = when (latest.resolvedAnalysisSource()) {
+            BiomarkerAnalysisSource.OnDeviceModel -> ""
+            else -> "Estimates are heuristic only — not a diagnosis. "
+        }
+
+        val body = when {
             days >= 21 && melaninDelta >= -1.0f && "niacinamide" in currentActives ->
-                "Melanin distribution is stagnant after 21 days. Consider an ingredient pivot toward alpha arbutin, azelaic acid, or tranexamic acid products after patch testing."
+                "Melanin distribution is stagnant after 21 days. Consider discussing alpha arbutin, azelaic acid, or tranexamic acid with a clinician after patch testing."
             latest.erythemaIndex - oldest.erythemaIndex > 4f ->
                 "Erythema has increased. Reduce exfoliating actives and prioritize barrier-supporting ingredients until redness normalizes."
             latest.acneLesionCount > oldest.acneLesionCount ->
@@ -26,5 +36,7 @@ class RegimenEngine {
             else ->
                 "No pivot triggered. Maintain current regimen and capture under matched light for cleaner longitudinal comparison."
         }
+
+        return heuristicPrefix + body
     }
 }

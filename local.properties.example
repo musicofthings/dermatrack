@@ -1,0 +1,6 @@
+# Copy to local.properties (gitignored) and fill in your Autoderm API key.
+# Get a key: https://app.autoderm.ai/ — docs: https://docs.autoderm.ai/
+AUTODERM_API_KEY=your_api_key_here
+# Official OpenAPI route: HTTP Bearer auth + multipart "image", query include_skin_tone.
+AUTODERM_API_BASE_URL=https://api.autoderm.ai
+AUTODERM_API_PATH=/v1/infer-diseases/v1

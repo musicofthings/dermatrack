@@ -4,11 +4,14 @@ import android.graphics.RectF
 
 data class FaceTrackingState(
     val detected: Boolean = false,
+    /** [PreviewView] width when coordinates were produced (view-referenced space). */
+    val viewWidth: Int = 0,
+    val viewHeight: Int = 0,
+    /** Face bounds in [PreviewView] pixels. */
     val faceBounds: RectF? = null,
     val meshPoints: List<NormalizedPoint> = emptyList(),
     val contourLines: List<List<NormalizedPoint>> = emptyList(),
     val faceOutline: List<NormalizedPoint> = emptyList(),
-    val sourceAspectRatio: Float = 4f / 3f,
     val yawDegrees: Float = 0f,
     val rollDegrees: Float = 0f,
     val leftEyeOpenProbability: Float? = null,
@@ -18,12 +21,6 @@ data class FaceTrackingState(
 ) {
     val isStraightEnough: Boolean
         get() = detected && kotlin.math.abs(yawDegrees) <= 10f && kotlin.math.abs(rollDegrees) <= 8f
-
-    val isLeftPose: Boolean
-        get() = detected && yawDegrees <= -18f
-
-    val isRightPose: Boolean
-        get() = detected && yawDegrees >= 18f
 
     val possibleObstruction: Boolean
         get() = detected && (
@@ -39,18 +36,20 @@ data class FaceTrackingState(
         val rollFactor = (1f - (kotlin.math.abs(rollDegrees) / 25f)).coerceIn(0f, 1f)
         val score = (yawFactor * 0.7f) + (rollFactor * 0.3f)
 
-        val faceArea = faceBounds.width() * faceBounds.height()
+        val frameArea = (viewWidth * viewHeight).toFloat().coerceAtLeast(1f)
+        val faceArea = (faceBounds.width() * faceBounds.height()) / frameArea
         val idealArea = 0.35f
         val distanceDelta = faceArea - idealArea
 
         return AlignmentState(
             score = score,
             headTiltDegrees = rollDegrees,
-            distanceDelta = distanceDelta
+            distanceDelta = distanceDelta,
         )
     }
 }
 
+/** 0..1 coordinates in [PreviewView] space (MlKitAnalyzer view-referenced output). */
 data class NormalizedPoint(
     val x: Float,
     val y: Float,

@@ -21,6 +21,27 @@ Privacy-first Android app for longitudinal skin health biomarker tracking, calib
 
 Raw biometric images are intended to remain in Android internal app storage. The Room database stores biomarker numbers and capture metadata only. Android backup is disabled in the manifest and data extraction rules.
 
+## Autoderm API (optional, opt-in)
+
+[DermaTrack can call Autoderm](https://docs.autoderm.ai/en/getting-started/getting-started?apiVersion=v1) for CE-marked disease screening on each saved capture when the user enables **Autoderm cloud screening** on the Capture tab.
+
+1. Copy `local.properties.example` to `local.properties` and set `AUTODERM_API_KEY` from [app.autoderm.ai](https://app.autoderm.ai/).
+2. Rebuild the app (`./gradlew :app:assembleDebug`).
+3. On Capture, turn on the Autoderm switch before recording a scan.
+
+Local biomarker heuristics always run on-device. Autoderm results are stored separately in Room (`autoderm_screenings`) and shown under **Autoderm cloud screening** on the report — never mixed into `BiomarkerAnalysisSource`.
+
+HTTP (per [Autoderm getting started](https://docs.autoderm.ai/en/getting-started/getting-started?apiVersion=v1)):
+
+```http
+POST {AUTODERM_API_BASE_URL}/api/analyze-image
+X-Api-Key: <key>
+X-Include-Skin-Tone: true
+multipart: image=<jpeg>
+```
+
+If that route fails, set `AUTODERM_API_BASE_URL=https://api.autoderm.ai` and `AUTODERM_API_PATH=/v1/infer-diseases/v1` in `local.properties` (OpenAPI server).
+
 ## Current model status
 
 The app includes model contracts plus an image-derived heuristic so the screens and private JPEG data flow can be exercised before the real TFLite and MediaPipe assets are added. Captured JPEG bytes flow through `BiomarkerAnalyzer.analyzeCapturedFrame`, and successful decodes record `ImageDerivedHeuristic` in the private markdown export. If a frame cannot be decoded, the analyzer records `DeterministicFallback`. Neither path is a clinical model.

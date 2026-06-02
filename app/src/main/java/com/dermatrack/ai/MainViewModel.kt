@@ -6,12 +6,18 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.dermatrack.ai.agent.RegimenEngine
 import com.dermatrack.ai.analysis.BiomarkerAnalyzer
+import com.dermatrack.ai.analysis.FitzpatrickGroup
 import com.dermatrack.ai.capture.AlignmentState
 import com.dermatrack.ai.data.AppContainer
+import com.dermatrack.ai.data.AutodermRepository
+import com.dermatrack.ai.data.CloudAnalysisPreferences
 import com.dermatrack.ai.data.ScanRepository
 import com.dermatrack.ai.data.VaultRepository
+import com.dermatrack.ai.data.model.AutodermScreeningEntity
+import com.dermatrack.ai.data.model.CapturePose
 import com.dermatrack.ai.data.model.ProductEntity
 import com.dermatrack.ai.data.model.ScanEntity
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +32,8 @@ data class MainUiState(
     val scans: List<ScanEntity> = emptyList(),
     val products: List<ProductEntity> = emptyList(),
     val latestReport: ClinicalReport? = null,
+    val autodermCloudEnabled: Boolean = false,
+    val autodermApiConfigured: Boolean = false,
 )
 
 data class ClinicalReport(
@@ -34,12 +42,12 @@ data class ClinicalReport(
     val riskNote: String,
     val acneSeverityGrade: AcneSeverityGrade,
     val progress: LongitudinalProgress?,
+    val autodermScreening: AutodermScreeningEntity? = null,
 )
 
 data class LongitudinalProgress(
     val daysSinceBaseline: Long,
     val lesionCountDeltaAbsolute: Int,
-    /** null when the baseline scan had zero lesions — a percent change is undefined there. */
     val lesionCountDeltaPercent: Float?,
     val erythemaDelta: Float,
     val pigmentationDelta: Float,
@@ -65,27 +73,43 @@ class MainViewModel(
     private val vaultRepository: VaultRepository,
     private val analyzer: BiomarkerAnalyzer,
     private val regimenEngine: RegimenEngine,
+    private val autodermRepository: AutodermRepository,
+    private val cloudAnalysisPreferences: CloudAnalysisPreferences,
+    autodermApiConfigured: Boolean,
 ) : ViewModel() {
+    private val autodermCloudEnabled = MutableStateFlow(cloudAnalysisPreferences.isAutodermEnabled())
+
     val uiState: StateFlow<MainUiState> = combine(
         scanRepository.observeScans(),
         scanRepository.observeProducts(),
-    ) { scans, products ->
-            val latest = scans.firstOrNull()
-            MainUiState(
-                scans = scans,
-                products = products,
-                latestReport = latest?.let {
-                    ClinicalReport(
-                        scan = it,
-                        recommendation = regimenEngine.evaluate(scans = scans, products = products),
-                        riskNote = "Grooming and health utility. Not a diagnosis or replacement for dermatologist care.",
-                        acneSeverityGrade = it.toAcneSeverityGrade(),
-                        progress = scans.toLongitudinalProgress(),
-                    )
-                },
-            )
-        }
+        autodermRepository.observeScreenings(),
+        autodermCloudEnabled,
+    ) { scans, products, autodermScreenings, cloudEnabled ->
+        val autodermByScanId = autodermScreenings.associateBy { it.scanId }
+        val latest = scans.firstOrNull()
+        MainUiState(
+            scans = scans,
+            products = products,
+            latestReport = latest?.let { scan ->
+                ClinicalReport(
+                    scan = scan,
+                    recommendation = regimenEngine.evaluate(scans = scans, products = products),
+                    riskNote = "Grooming and health utility. Not a diagnosis or replacement for dermatologist care.",
+                    acneSeverityGrade = scan.toAcneSeverityGrade(),
+                    progress = scans.toLongitudinalProgress(),
+                    autodermScreening = autodermByScanId[scan.id],
+                )
+            },
+            autodermCloudEnabled = cloudEnabled,
+            autodermApiConfigured = autodermApiConfigured,
+        )
+    }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MainUiState())
+
+    fun setAutodermCloudEnabled(enabled: Boolean) {
+        cloudAnalysisPreferences.setAutodermEnabled(enabled)
+        autodermCloudEnabled.value = enabled
+    }
 
     fun createPrivateScanImageFile(): File = vaultRepository.createPrivateImageFile()
 
@@ -93,19 +117,18 @@ class MainViewModel(
         lux: Float,
         alignmentState: AlignmentState,
         imageFile: File,
+        fitzpatrickGroup: FitzpatrickGroup,
+        capturePose: CapturePose,
         onComplete: () -> Unit,
         onError: (Throwable) -> Unit,
     ) {
         viewModelScope.launch {
-            // Step 1: analyse + persist the scan row atomically with the image file.
-            // If anything in here fails, delete the image so we don't leak orphaned JPEGs and
-            // do NOT surface a half-committed scan to the UI.
             val scanCommit = runCatching {
                 val analysis = withContext(Dispatchers.IO) {
                     analyzer.analyzeCapturedFrame(
                         frame = imageFile.readBytes(),
                         lux = lux,
-                        alignmentState = alignmentState,
+                        fitzpatrickGroup = fitzpatrickGroup,
                     )
                 }
                 val imageUri = vaultRepository.privateImageUri(imageFile)
@@ -114,6 +137,9 @@ class MainViewModel(
                     lux = lux,
                     biomarkers = analysis.result,
                     alignmentScore = alignmentState.score,
+                    analysisSource = analysis.source,
+                    fitzpatrickGroup = analysis.fitzpatrickGroup,
+                    capturePose = capturePose,
                 )
                 ScanCommit(scanId = scanId, analysis = analysis)
             }
@@ -124,8 +150,6 @@ class MainViewModel(
                 return@launch
             }
 
-            // Step 2: markdown export is best-effort metadata, not a clinical record.
-            // Failure here MUST NOT delete the image or roll back the scan row — both are valid.
             runCatching {
                 withContext(Dispatchers.IO) {
                     vaultRepository.exportMarkdownMetadata(
@@ -133,10 +157,20 @@ class MainViewModel(
                         biomarkers = commit.analysis.result,
                         lux = lux,
                         analysisSource = commit.analysis.source,
+                        fitzpatrickGroup = commit.analysis.fitzpatrickGroup,
                     )
                 }
             }.onFailure {
                 Log.w("MainViewModel", "Markdown export failed for scan ${commit.scanId}", it)
+            }
+
+            if (cloudAnalysisPreferences.isAutodermEnabled()) {
+                launch(Dispatchers.IO) {
+                    autodermRepository.analyzeScanIfConfigured(
+                        scanId = commit.scanId,
+                        imageFile = imageFile,
+                    )
+                }
             }
 
             onComplete()
@@ -164,6 +198,9 @@ class MainViewModel(
                         vaultRepository = container.vaultRepository,
                         analyzer = container.biomarkerAnalyzer,
                         regimenEngine = container.regimenEngine,
+                        autodermRepository = container.autodermRepository,
+                        cloudAnalysisPreferences = container.cloudAnalysisPreferences,
+                        autodermApiConfigured = container.autodermApiConfigured,
                     ) as T
                 }
             }
@@ -194,8 +231,6 @@ private fun List<ScanEntity>.toLongitudinalProgress(): LongitudinalProgress? {
         else -> ScanTrend.Stable
     }
 
-    // A percent change from 0 is undefined; report null and let the UI surface the absolute count
-    // instead. Coercing baseline to 1 produced 400%-style numbers that read as catastrophic.
     val lesionPercent = if (baseline.acneLesionCount > 0) {
         (lesionDelta.toFloat() / baseline.acneLesionCount) * 100f
     } else {

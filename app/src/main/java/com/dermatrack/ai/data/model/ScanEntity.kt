@@ -3,6 +3,13 @@ package com.dermatrack.ai.data.model
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
+/** Pose a captured frame represents within a guided multi-pose session. */
+enum class CapturePose(val spokenLabel: String, val shortLabel: String) {
+    Front("front", "Front"),
+    LeftProfile("left profile", "Left profile"),
+    RightProfile("right profile", "Right profile"),
+}
+
 @Entity(tableName = "scans")
 data class ScanEntity(
     @PrimaryKey(autoGenerate = true)
@@ -17,4 +24,7 @@ data class ScanEntity(
     val inflammatoryAcneCount: Int,
     val nonInflammatoryAcneCount: Int,
     val alignmentScore: Float,
+    val analysisSource: String,
+    val fitzpatrickGroup: String,
+    val capturePose: String = CapturePose.Front.name,
 )
