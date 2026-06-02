@@ -4,3 +4,4 @@ AUTODERM_API_KEY=your_api_key_here
 # Official OpenAPI route: HTTP Bearer auth + multipart "image", query include_skin_tone.
 AUTODERM_API_BASE_URL=https://api.autoderm.ai
 AUTODERM_API_PATH=/v1/infer-diseases/v1
+AMAZON_BACKEND_BASE_URL=http://10.0.2.2:8000

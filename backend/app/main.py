@@ -1,6 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from pydantic import BaseModel, Field
 
+from .amazon_paapi import AmazonPaapiClient
 from .regimen import map_biomarker_delta
 
 app = FastAPI(
@@ -25,6 +26,19 @@ class IngredientDecision(BaseModel):
     clinical_note: str
 
 
+class AmazonSearchItem(BaseModel):
+    asin: str
+    title: str
+    rating: float | None = None
+    rating_count: int | None = None
+    price: str | None = None
+    url: str | None = None
+
+
+class AmazonSearchResponse(BaseModel):
+    items: list[AmazonSearchItem] = Field(default_factory=list)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -41,3 +55,22 @@ def ingredient_decision(payload: BiomarkerDeltaRequest) -> IngredientDecision:
         current_actives=payload.current_actives,
     )
     return IngredientDecision(**decision)
+
+
+@app.get("/amazon/search", response_model=AmazonSearchResponse)
+async def amazon_search(q: str = Query(min_length=2, max_length=120)) -> AmazonSearchResponse:
+    client = AmazonPaapiClient()
+    items = await client.search(q)
+    return AmazonSearchResponse(
+        items=[
+            AmazonSearchItem(
+                asin=item.asin,
+                title=item.title,
+                rating=item.rating,
+                rating_count=item.rating_count,
+                price=item.price,
+                url=item.url,
+            )
+            for item in items
+        ]
+    )

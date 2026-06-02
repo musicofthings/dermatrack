@@ -4,7 +4,11 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.media.AudioManager
 import android.media.ExifInterface
@@ -13,6 +17,7 @@ import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.util.Size as CameraSize
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -47,17 +52,23 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -112,6 +123,8 @@ import com.dermatrack.ai.ClinicalReport
 import com.dermatrack.ai.LongitudinalProgress
 import com.dermatrack.ai.MainUiState
 import com.dermatrack.ai.MainViewModel
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.dermatrack.ai.capture.AlignmentState
 import com.dermatrack.ai.capture.FaceMlKitAnalyzer
 import com.dermatrack.ai.capture.FaceTrackingState
@@ -120,6 +133,7 @@ import com.dermatrack.ai.capture.LightMeter
 import com.dermatrack.ai.capture.LuxGate
 import com.dermatrack.ai.analysis.FitzpatrickGroup
 import com.dermatrack.ai.data.model.CapturePose
+import com.dermatrack.ai.data.model.PersonaEntity
 import com.dermatrack.ai.data.model.ProductEntity
 import com.dermatrack.ai.data.model.ScanEntity
 import com.dermatrack.ai.data.model.analysisSourceUserLabel
@@ -140,7 +154,7 @@ import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.max
 
-private enum class AppTab { Report, Capture, Inventory }
+private enum class AppTab { Home, Report, Capture, Inventory, Regulatory, Privacy }
 
 enum class CaptureWorkflowStage {
     Setup,
@@ -177,30 +191,67 @@ private val CameraStreamResolutionSelector = ResolutionSelector.Builder()
 @Composable
 fun DermaTrackAppRoot(viewModel: MainViewModel) {
     val uiState by viewModel.uiState.collectAsState()
-    var selectedTab by remember { mutableStateOf(AppTab.Report) }
+    var selectedTab by remember { mutableStateOf(AppTab.Home) }
+    var menuExpanded by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val googleSignInClient = remember(context) {
+        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestEmail()
+            .build()
+        GoogleSignIn.getClient(context, gso)
+    }
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = StartActivityForResult(),
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        val account = runCatching { task.result }.getOrNull()
+        val email = account?.email
+        if (!email.isNullOrBlank()) {
+            viewModel.setPrimaryUserEmail(email)
+        }
+    }
 
     Scaffold(
-        topBar = { ClinicalTopBar() },
+        topBar = {
+            ClinicalTopBar(
+                onMenuClick = { menuExpanded = true },
+                menuExpanded = menuExpanded,
+                onDismissMenu = { menuExpanded = false },
+                onSelectTab = {
+                    selectedTab = it
+                    menuExpanded = false
+                },
+            )
+        },
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = selectedTab == AppTab.Report,
-                    onClick = { selectedTab = AppTab.Report },
-                    icon = { Icon(Icons.Default.Science, contentDescription = "Report") },
-                    label = { Text("Report") },
-                )
-                NavigationBarItem(
-                    selected = selectedTab == AppTab.Capture,
-                    onClick = { selectedTab = AppTab.Capture },
-                    icon = { Icon(Icons.Default.CameraAlt, contentDescription = "Capture") },
-                    label = { Text("Capture") },
-                )
-                NavigationBarItem(
-                    selected = selectedTab == AppTab.Inventory,
-                    onClick = { selectedTab = AppTab.Inventory },
-                    icon = { Icon(Icons.Default.Inventory2, contentDescription = "Inventory") },
-                    label = { Text("Inventory") },
-                )
+            Column {
+                ComplianceFooterBadges()
+                NavigationBar {
+                    NavigationBarItem(
+                        selected = selectedTab == AppTab.Home,
+                        onClick = { selectedTab = AppTab.Home },
+                        icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
+                        label = { Text("Home") },
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == AppTab.Report,
+                        onClick = { selectedTab = AppTab.Report },
+                        icon = { Icon(Icons.Default.Science, contentDescription = "Report") },
+                        label = { Text("Report") },
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == AppTab.Capture,
+                        onClick = { selectedTab = AppTab.Capture },
+                        icon = { Icon(Icons.Default.CameraAlt, contentDescription = "Capture") },
+                        label = { Text("Capture") },
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == AppTab.Inventory,
+                        onClick = { selectedTab = AppTab.Inventory },
+                        icon = { Icon(Icons.Default.Inventory2, contentDescription = "Inventory") },
+                        label = { Text("Inventory") },
+                    )
+                }
             }
         },
     ) { padding ->
@@ -211,6 +262,25 @@ fun DermaTrackAppRoot(viewModel: MainViewModel) {
                 .padding(padding),
         ) {
             when (selectedTab) {
+                AppTab.Home -> PersonaHomeScreen(
+                    personas = uiState.personas,
+                    latestFrontImagePathByPersonaId = uiState.latestFrontImagePathByPersonaId,
+                    selectedPersonaId = uiState.selectedPersonaId,
+                    faceMatchingAvailable = uiState.faceMatchingAvailable,
+                    suggestedPersona = uiState.suggestedPersona,
+                    primaryUserEmail = uiState.primaryUserEmail,
+                    primaryPersonaId = uiState.primaryPersonaId,
+                    onSelectPersona = viewModel::selectPersona,
+                    onCreatePersona = viewModel::createPersona,
+                    onAcceptSuggestion = viewModel::acceptSuggestedPersona,
+                    onSignInPrimary = { googleSignInLauncher.launch(googleSignInClient.signInIntent) },
+                    onSignOutPrimary = {
+                        googleSignInClient.signOut()
+                        viewModel.clearPrimaryUser()
+                    },
+                    onRemovePersona = viewModel::removePersona,
+                    onGoToCapture = { selectedTab = AppTab.Capture },
+                )
                 AppTab.Report -> ReportScreen(uiState)
                 AppTab.Capture -> CaptureScreen(
                     baselineLux = uiState.scans.firstOrNull()?.baselineLux ?: 520f,
@@ -229,20 +299,65 @@ fun DermaTrackAppRoot(viewModel: MainViewModel) {
                             onError = onError,
                         )
                     },
+                    onClearHistory = viewModel::clearSelectedPersonaHistory,
+                    onSuggestPersonaFromImage = viewModel::suggestPersonaFromImage,
                     onSessionComplete = { selectedTab = AppTab.Report },
                 )
                 AppTab.Inventory -> InventoryScreen(
                     products = uiState.products,
                     onAdd = viewModel::addInventoryItem,
+                    amazonResults = uiState.amazonResults,
+                    amazonLoading = uiState.amazonSearchLoading,
+                    amazonError = uiState.amazonSearchError,
+                    onAmazonSearch = viewModel::searchAmazonCatalog,
+                    onAddAmazonWishlist = viewModel::addAmazonToWishlist,
                 )
+                AppTab.Regulatory -> RegulatoryScreen()
+                AppTab.Privacy -> PrivacyFirstScreen()
             }
         }
     }
 }
 
+@Composable
+private fun ComplianceFooterBadges() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ComplianceBadge(text = "CE Marked")
+        ComplianceBadge(text = "HIPAA Compliant")
+        ComplianceBadge(text = "GDPR Compliant")
+    }
+}
+
+@Composable
+private fun ComplianceBadge(text: String) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ClinicalTopBar() {
+private fun ClinicalTopBar(
+    onMenuClick: () -> Unit,
+    menuExpanded: Boolean,
+    onDismissMenu: () -> Unit,
+    onSelectTab: (AppTab) -> Unit,
+) {
     TopAppBar(
         title = {
             Column {
@@ -254,7 +369,314 @@ private fun ClinicalTopBar() {
                 )
             }
         },
+        actions = {
+            IconButton(onClick = onMenuClick) {
+                Icon(Icons.Default.Menu, contentDescription = "Open menu")
+            }
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = onDismissMenu) {
+                DropdownMenuItem(text = { Text("Home") }, onClick = { onSelectTab(AppTab.Home) })
+                DropdownMenuItem(text = { Text("Report") }, onClick = { onSelectTab(AppTab.Report) })
+                DropdownMenuItem(text = { Text("Capture") }, onClick = { onSelectTab(AppTab.Capture) })
+                DropdownMenuItem(text = { Text("Inventory") }, onClick = { onSelectTab(AppTab.Inventory) })
+                DropdownMenuItem(text = { Text("Regulatory") }, onClick = { onSelectTab(AppTab.Regulatory) })
+                DropdownMenuItem(text = { Text("Privacy First") }, onClick = { onSelectTab(AppTab.Privacy) })
+            }
+        },
     )
+}
+
+@Composable
+private fun RegulatoryScreen() {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+    ) {
+        item {
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Regulatory", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Placeholder regulatory content. Replace with approved legal/compliance copy before production release.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        item {
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("HIPAA Information", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "DermaTrack AI is designed to support privacy-forward handling of user health-related data with local processing defaults and constrained access pathways.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        }
+        item {
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("GDPR Information", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "DermaTrack AI follows principles of minimization, transparency, and user control. Users can manage and clear stored persona history from within the app.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrivacyFirstScreen() {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+    ) {
+        item {
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Privacy First Policy", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Generic placeholder privacy text. Replace with finalized policy language before shipping.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        item {
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Local-only by default", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Face images and scan artifacts are kept in app-private local storage unless optional cloud features are explicitly enabled.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        }
+        item {
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("No cloud images by default", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Biometric images are not uploaded by default. Optional cloud screening is opt-in and clearly labeled.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        }
+        item {
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("User controls", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Users can clear selected persona history, retake captures before analysis, and keep persona-specific data separated.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PersonaHomeScreen(
+    personas: List<PersonaEntity>,
+    latestFrontImagePathByPersonaId: Map<Long, String>,
+    selectedPersonaId: Long?,
+    faceMatchingAvailable: Boolean,
+    suggestedPersona: com.dermatrack.ai.PersonaSuggestion?,
+    primaryUserEmail: String?,
+    primaryPersonaId: Long?,
+    onSelectPersona: (Long) -> Unit,
+    onCreatePersona: (String) -> Unit,
+    onAcceptSuggestion: () -> Unit,
+    onSignInPrimary: () -> Unit,
+    onSignOutPrimary: () -> Unit,
+    onRemovePersona: (Long) -> Unit,
+    onGoToCapture: () -> Unit,
+) {
+    var newPersonaName by remember { mutableStateOf("") }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+    ) {
+        item {
+            Card {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Who is being scanned?", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Select a persona before capture so trends and reports stay person-specific.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = newPersonaName,
+                        onValueChange = { newPersonaName = it },
+                        label = { Text("Create new persona") },
+                        singleLine = true,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = {
+                                onCreatePersona(newPersonaName)
+                                newPersonaName = ""
+                            },
+                            enabled = newPersonaName.isNotBlank(),
+                        ) { Text("Add Persona") }
+                        OutlinedButton(
+                            onClick = onGoToCapture,
+                            enabled = selectedPersonaId != null,
+                        ) { Text("Start Capture") }
+                    }
+                    Text(
+                        if (faceMatchingAvailable) {
+                            "Face matching model available: persona auto-suggestion can be enabled next."
+                        } else {
+                            "Face matching model not installed yet (add assets/models/mobile_facenet.tflite)."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    HorizontalDivider()
+                    Text("Primary User Access", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        primaryUserEmail?.let { "Signed in as $it" }
+                            ?: "Sign in with Google to enable remove-user controls.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (primaryUserEmail == null) {
+                            OutlinedButton(onClick = onSignInPrimary) { Text("Sign in with Google") }
+                        } else {
+                            OutlinedButton(onClick = onSignOutPrimary) { Text("Sign out") }
+                        }
+                    }
+                }
+            }
+        }
+        suggestedPersona?.let { suggestion ->
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Suggested persona", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "${suggestion.personaName} · ${(suggestion.confidence * 100).toInt()}% match",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Button(onClick = onAcceptSuggestion) { Text("Use Suggestion") }
+                    }
+                }
+            }
+        }
+        items(personas) { persona ->
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (persona.id == selectedPersonaId) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                ),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        latestFrontImagePathByPersonaId[persona.id]?.let { imagePath ->
+                            val imageFile = remember(imagePath) { File(imagePath) }
+                            if (imageFile.exists()) {
+                                CapturedImage(
+                                    file = imageFile,
+                                    modifier = Modifier
+                                        .size(56.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF121816)),
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(56.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF121816)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = Color.White.copy(alpha = 0.7f),
+                                    )
+                                }
+                            }
+                        } ?: Box(
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF121816)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                tint = Color.White.copy(alpha = 0.7f),
+                            )
+                        }
+                        Column {
+                        Text(persona.name, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Created ${formatDate(persona.createdAtEpochMillis)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        }
+                    }
+                    OutlinedButton(onClick = { onSelectPersona(persona.id) }) {
+                        Text(if (persona.id == selectedPersonaId) "Selected" else "Select")
+                    }
+                }
+                if (primaryUserEmail != null && primaryPersonaId != null && persona.id != primaryPersonaId) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        OutlinedButton(onClick = { onRemovePersona(persona.id) }) {
+                            Text("Remove User")
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -731,6 +1153,8 @@ private fun CaptureScreen(
         () -> Unit,
         (Throwable) -> Unit,
     ) -> Unit,
+    onClearHistory: () -> Unit,
+    onSuggestPersonaFromImage: (File) -> Unit,
     onSessionComplete: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -777,6 +1201,7 @@ private fun CaptureScreen(
     val pendingCaptures = remember { mutableStateListOf<PendingCapture>() }
     var reviewMode by remember { mutableStateOf(false) }
     var confirming by remember { mutableStateOf(false) }
+    var clearingHistory by remember { mutableStateOf(false) }
     val faceMlKitAnalyzer = remember {
         FaceMlKitAnalyzer(
             previewViewProvider = { previewView },
@@ -901,6 +1326,9 @@ private fun CaptureScreen(
                             fitzpatrick = captureFitzpatrick,
                         ),
                     )
+                    if (pose == CapturePose.Front) {
+                        onSuggestPersonaFromImage(imageFile)
+                    }
                     playCompleteBeep()
                     captureStatus = "${pose.shortLabel} captured."
                     saveTriggered = false
@@ -963,6 +1391,22 @@ private fun CaptureScreen(
         captureInProgress = false
         workflowStage = CaptureWorkflowStage.Setup
         captureStatus = "Let's recapture. Tap Start Guided Scan."
+    }
+
+    fun clearHistory() {
+        if (confirming || clearingHistory) return
+        clearingHistory = true
+        pendingCaptures.forEach { it.file.delete() }
+        pendingCaptures.clear()
+        onClearHistory()
+        reviewMode = false
+        captureInProgress = false
+        workflowStage = CaptureWorkflowStage.Setup
+        captureStatus = "Selected persona history cleared. Start a new guided scan."
+        scope.launch {
+            delay(500)
+            clearingHistory = false
+        }
     }
 
     fun transitionTo(nextStage: CaptureWorkflowStage, status: String) {
@@ -1220,8 +1664,10 @@ private fun CaptureScreen(
         CaptureReviewSection(
             captures = pendingCaptures.toList(),
             confirming = confirming,
+            clearingHistory = clearingHistory,
             onConfirm = { confirmCaptures() },
             onRetake = { retakeCaptures() },
+            onClearHistory = { clearHistory() },
         )
         return
     }
@@ -1355,8 +1801,10 @@ private fun CaptureScreen(
 private fun CaptureReviewSection(
     captures: List<PendingCapture>,
     confirming: Boolean,
+    clearingHistory: Boolean,
     onConfirm: () -> Unit,
     onRetake: () -> Unit,
+    onClearHistory: () -> Unit,
 ) {
     val scrollState = rememberScrollState()
     Box(modifier = Modifier.fillMaxSize()) {
@@ -1395,12 +1843,18 @@ private fun CaptureReviewSection(
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onRetake, enabled = !confirming) {
+                OutlinedButton(onClick = onRetake, enabled = !confirming && !clearingHistory) {
                     Text("Retake all")
                 }
-                Button(onClick = onConfirm, enabled = !confirming) {
+                Button(onClick = onConfirm, enabled = !confirming && !clearingHistory) {
                     Text(if (confirming) "Analyzing…" else "Looks good — Analyze")
                 }
+            }
+            OutlinedButton(
+                onClick = onClearHistory,
+                enabled = !confirming && !clearingHistory,
+            ) {
+                Text(if (clearingHistory) "Clearing history..." else "Clear history")
             }
             Text(
                 text = "Images are stored only in this app's private storage and attached to your scan history.",
@@ -1465,13 +1919,51 @@ private fun loadScaledBitmap(path: String, maxDimension: Int): ImageBitmap? {
             else -> 0f
         }
     }.getOrDefault(0f)
-    val oriented = if (rotation != 0f) {
+    var oriented = if (rotation != 0f) {
         val matrix = Matrix().apply { postRotate(rotation) }
         Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
     } else {
         decoded
     }
-    return oriented.asImageBitmap()
+    // Some emulator/front-camera captures arrive without reliable EXIF orientation.
+    // For face portraits shown in UI cards, normalize to upright portrait.
+    // On this capture pipeline, landscape frames need a 90-degree right rotation.
+    if (oriented.width > oriented.height) {
+        val portraitMatrix = Matrix().apply { postRotate(-90f) }
+        oriented = Bitmap.createBitmap(
+            oriented,
+            0,
+            0,
+            oriented.width,
+            oriented.height,
+            portraitMatrix,
+            true,
+        )
+    }
+    val masked = applyFaceMask(oriented)
+    if (masked !== oriented) oriented.recycle()
+    return masked.asImageBitmap()
+}
+
+private fun applyFaceMask(source: Bitmap): Bitmap {
+    val width = source.width
+    val height = source.height
+    if (width <= 0 || height <= 0) return source
+    val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(output)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    // Slightly inset oval keeps facial region and removes most background.
+    val insetX = width * 0.08f
+    val insetTop = height * 0.06f
+    val insetBottom = height * 0.14f
+    val faceOval = RectF(insetX, insetTop, width - insetX, height - insetBottom)
+    canvas.drawOval(faceOval, paint)
+
+    paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
+    canvas.drawBitmap(source, 0f, 0f, paint)
+    paint.xfermode = null
+    return output
 }
 
 @Composable
@@ -1881,14 +2373,75 @@ private fun GateRow(label: String, value: String, passed: Boolean) {
 private fun InventoryScreen(
     products: List<ProductEntity>,
     onAdd: (String, String) -> Unit,
+    amazonResults: List<com.dermatrack.ai.integration.amazon.AmazonCatalogProduct>,
+    amazonLoading: Boolean,
+    amazonError: String?,
+    onAmazonSearch: (String) -> Unit,
+    onAddAmazonWishlist: (com.dermatrack.ai.integration.amazon.AmazonCatalogProduct) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
     var actives by remember { mutableStateOf("") }
+    var amazonQuery by remember { mutableStateOf("") }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
     ) {
+        item {
+            Card(
+                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Amazon Skin Care Search", style = MaterialTheme.typography.titleMedium)
+                    OutlinedTextField(
+                        value = amazonQuery,
+                        onValueChange = { amazonQuery = it },
+                        label = { Text("Search Amazon products") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = { onAmazonSearch(amazonQuery) },
+                            enabled = amazonQuery.trim().length >= 2 && !amazonLoading,
+                        ) {
+                            Text(if (amazonLoading) "Searching..." else "Search Amazon")
+                        }
+                    }
+                    amazonError?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    amazonResults.take(8).forEach { item ->
+                        Card(
+                            shape = RoundedCornerShape(8.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        ) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(item.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    buildString {
+                                        append("ASIN ${item.asin}")
+                                        item.rating?.let { append(" · ${"%.1f".format(it)}★") }
+                                        item.ratingCount?.let { append(" (${it} ratings)") }
+                                        item.price?.let { append(" · $it") }
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                OutlinedButton(onClick = { onAddAmazonWishlist(item) }) {
+                                    Text("Add to Wishlist")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         item {
             Card(
                 shape = RoundedCornerShape(8.dp),

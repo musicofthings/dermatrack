@@ -42,6 +42,11 @@ android {
             "AUTODERM_API_PATH",
             "\"${localProperties.getProperty("AUTODERM_API_PATH", "/v1/infer-diseases/v1").replace("\"", "\\\"")}\"",
         )
+        buildConfigField(
+            "String",
+            "AMAZON_BACKEND_BASE_URL",
+            "\"${localProperties.getProperty("AMAZON_BACKEND_BASE_URL", "http://10.0.2.2:8000").replace("\"", "\\\"")}\"",
+        )
     }
 
     buildTypes {
@@ -102,4 +107,5 @@ dependencies {
     implementation(libs.mediapipe.tasks.vision)
     implementation(libs.mlkit.face.detection)
     implementation(libs.okhttp)
+    implementation(libs.google.play.services.auth)
 }

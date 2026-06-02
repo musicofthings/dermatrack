@@ -27,4 +27,5 @@ data class ScanEntity(
     val analysisSource: String,
     val fitzpatrickGroup: String,
     val capturePose: String = CapturePose.Front.name,
+    val personaId: Long = 1L,
 )

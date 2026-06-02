@@ -17,4 +17,7 @@ interface AutodermScreeningDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(screening: AutodermScreeningEntity): Long
+
+    @Query("DELETE FROM autoderm_screenings")
+    suspend fun clearAll()
 }

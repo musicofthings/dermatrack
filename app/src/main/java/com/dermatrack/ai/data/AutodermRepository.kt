@@ -53,4 +53,8 @@ class AutodermRepository(
             ),
         )
     }
+
+    suspend fun clearAll() {
+        autodermScreeningDao.clearAll()
+    }
 }

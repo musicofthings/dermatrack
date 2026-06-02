@@ -22,3 +22,7 @@ Environment variables expected for PA-API wiring:
 - `AMAZON_PAAPI_PARTNER_TAG`
 - `AMAZON_PAAPI_HOST`, default `webservices.amazon.in`
 - `AMAZON_PAAPI_REGION`, default `eu-west-1`
+
+App endpoint:
+
+- `GET /amazon/search?q=<keywords>` → returns `items[]` with title, rating, ratings count, price, and URL.

@@ -68,4 +68,44 @@ object DatabaseMigrations {
             )
         }
     }
+
+    val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS personas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    name TEXT NOT NULL,
+                    createdAtEpochMillis INTEGER NOT NULL
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO personas (id, name, createdAtEpochMillis)
+                VALUES (1, 'Default', strftime('%s','now') * 1000)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                ALTER TABLE scans ADD COLUMN personaId INTEGER NOT NULL DEFAULT 1
+                """.trimIndent(),
+            )
+        }
+    }
+
+    val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS persona_embeddings (
+                    personaId INTEGER NOT NULL,
+                    embeddingJson TEXT NOT NULL,
+                    updatedAtEpochMillis INTEGER NOT NULL,
+                    PRIMARY KEY(personaId)
+                )
+                """.trimIndent(),
+            )
+        }
+    }
 }

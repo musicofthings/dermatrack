@@ -51,4 +51,14 @@ class VaultRepository(private val context: Context) {
         )
         return file
     }
+
+    fun clearVaultData() {
+        imageDir.listFiles()?.forEach { it.delete() }
+        exportDir.listFiles()?.forEach { it.delete() }
+    }
+
+    fun deleteScanArtifacts(scanId: Long, imagePath: String) {
+        File(imagePath).takeIf { it.exists() }?.delete()
+        File(exportDir, "scan_${scanId}.md").takeIf { it.exists() }?.delete()
+    }
 }
